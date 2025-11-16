@@ -1,0 +1,28 @@
+name: Sync upstream
+run-name: Sync upstream
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GH_PAT }}
+          fetch-depth: 0
+
+      - name: Set Git identity
+        run: bash .github/scripts/configure-git.sh
+
+      - name: Fetch upstream changes
+        run: bash .github/scripts/fetch-upstream.sh
+
+      - name: Rebase main onto upstream and push
+        run: bash .github/scripts/rebase-upstream.sh
