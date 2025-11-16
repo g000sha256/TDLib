@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -15,6 +15,7 @@
 
 #include "td/utils/common.h"
 #include "td/utils/logging.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Status.h"
 
 #include <type_traits>
@@ -37,7 +38,7 @@ class RequestActor : public Actor {
     FutureActor<T> future;
     init_promise_future(&promise_actor, &future);
 
-    auto promise = PromiseCreator::from_promise_actor(std::move(promise_actor));
+    auto promise = create_promise_from_promise_actor(std::move(promise_actor));
     do_run(std::move(promise));
 
     if (future.is_ready()) {
@@ -66,7 +67,7 @@ class RequestActor : public Actor {
   void raw_event(const Event::Raw &event) final {
     if (future_.is_error()) {
       auto error = future_.move_as_error();
-      if (error == Status::Error<FutureActor<T>::HANGUP_ERROR_CODE>()) {
+      if (error.is_static() && error.code() == FutureActor<T>::HANGUP_ERROR_CODE) {
         // dropping query due to closing or lost promise
         if (G()->close_flag()) {
           do_send_error(Global::request_aborted_error());

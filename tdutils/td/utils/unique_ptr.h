@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -21,8 +21,8 @@ class unique_ptr final {
   using element_type = T;
 
   unique_ptr() noexcept = default;
-  unique_ptr(const unique_ptr &other) = delete;
-  unique_ptr &operator=(const unique_ptr &other) = delete;
+  unique_ptr(const unique_ptr &) = delete;
+  unique_ptr &operator=(const unique_ptr &) = delete;
   unique_ptr(unique_ptr &&other) noexcept : ptr_(other.release()) {
   }
   unique_ptr &operator=(unique_ptr &&other) noexcept {
@@ -96,6 +96,22 @@ bool operator!=(std::nullptr_t, const unique_ptr<T> &p) {
 template <class T>
 bool operator!=(const unique_ptr<T> &p, std::nullptr_t) {
   return static_cast<bool>(p);
+}
+
+template <class T>
+bool operator==(const unique_ptr<T> &lhs, const unique_ptr<T> &rhs) {
+  if (lhs == nullptr) {
+    return rhs == nullptr;
+  }
+  if (rhs == nullptr) {
+    return false;
+  }
+  return *lhs == *rhs;
+}
+
+template <class T>
+bool operator!=(const unique_ptr<T> &lhs, const unique_ptr<T> &rhs) {
+  return !(lhs == rhs);
 }
 
 template <class Type, class... Args>

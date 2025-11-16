@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -10,14 +10,14 @@
 #include "td/telegram/telegram_api.h"
 
 #include "td/actor/actor.h"
-#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/common.h"
+#include "td/utils/FlatHashMap.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
 
 #include <mutex>
-#include <unordered_map>
 
 namespace td {
 
@@ -37,6 +37,10 @@ class CountryInfoManager final : public Actor {
   static td_api::object_ptr<td_api::phoneNumberInfo> get_phone_number_info_sync(const string &language_code,
                                                                                 string phone_number_prefix);
 
+  static string get_country_flag_emoji(const string &country_code);
+
+  void on_update_fragment_prefixes();
+
   CountryInfoManager(const CountryInfoManager &) = delete;
   CountryInfoManager &operator=(const CountryInfoManager &) = delete;
   CountryInfoManager(CountryInfoManager &&) = delete;
@@ -52,6 +56,8 @@ class CountryInfoManager final : public Actor {
   struct CountryList;
 
   string get_main_language_code();
+
+  static bool is_fragment_phone_number(string phone_number);
 
   void do_get_countries(string language_code, bool is_recursive,
                         Promise<td_api::object_ptr<td_api::countries>> &&promise);
@@ -76,9 +82,12 @@ class CountryInfoManager final : public Actor {
 
   static int32 manager_count_;
 
-  static std::unordered_map<string, unique_ptr<CountryList>> countries_;
+  static FlatHashMap<string, unique_ptr<CountryList>> countries_;
 
-  std::unordered_map<string, vector<Promise<Unit>>> pending_load_country_queries_;
+  static string fragment_prefixes_str_;
+  static vector<string> fragment_prefixes_;
+
+  FlatHashMap<string, vector<Promise<Unit>>> pending_load_country_queries_;
 
   Td *td_;
   ActorShared<> parent_;

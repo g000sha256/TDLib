@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -27,16 +27,16 @@ bool is_memprof_on() {
   return true;
 }
 
+#define my_assert(f) \
+  if (!(f)) {        \
+    std::abort();    \
+  }
+
 #if USE_MEMPROF_SAFE
 double get_fast_backtrace_success_rate() {
   return 0;
 }
 #else
-
-#define my_assert(f) \
-  if (!(f)) {        \
-    std::abort();    \
-  }
 
 #if TD_LINUX
 extern void *__libc_stack_end;
@@ -143,7 +143,7 @@ struct HashtableNode {
   std::atomic<std::size_t> size;
 };
 
-static constexpr std::size_t HT_MAX_SIZE = 1000000;
+static constexpr std::size_t HT_MAX_SIZE = 10000000;
 static std::atomic<std::size_t> ht_size{0};
 static std::array<HashtableNode, HT_MAX_SIZE> ht;
 
@@ -265,12 +265,14 @@ void free(void *data_void) {
 #endif
   return free_old(info);
 }
+
 void *calloc(std::size_t size_a, std::size_t size_b) {
   auto size = size_a * size_b;
   void *res = malloc_with_frame(size, get_backtrace());
   std::memset(res, 0, size);
   return res;
 }
+
 void *realloc(void *ptr, std::size_t size) {
   if (ptr == nullptr) {
     return malloc_with_frame(size, get_backtrace());
@@ -282,27 +284,31 @@ void *realloc(void *ptr, std::size_t size) {
   free(ptr);
   return new_ptr;
 }
-void *memalign(std::size_t aligment, std::size_t size) {
+
+void *memalign(std::size_t alignment, std::size_t size) {
   my_assert(false && "Memalign is unsupported");
   return nullptr;
 }
 }
 
-// c++14 guarantees that it is enough to override these two operators.
+// C++17 guarantees that it is enough to override these 4 operators
 void *operator new(std::size_t count) {
   return malloc_with_frame(count, get_backtrace());
 }
 void operator delete(void *ptr) noexcept(true) {
   free(ptr);
 }
-// because of gcc warning: the program should also define 'void operator delete(void*, std::size_t)'
-void operator delete(void *ptr, std::size_t) noexcept(true) {
+void *operator new(std::size_t count, std::align_val_t al) {
+  return memalign(static_cast<std::size_t>(al), count);
+}
+void operator delete(void *ptr, std::align_val_t al) noexcept {
   free(ptr);
 }
 
-// c++17
-// void *operator new(std::size_t count, std::align_val_t al);
-// void operator delete(void *ptr, std::align_val_t al);
+// because of GCC warning: the program should also define 'void operator delete(void*, std::size_t)'
+void operator delete(void *ptr, std::size_t) noexcept(true) {
+  free(ptr);
+}
 
 #else
 bool is_memprof_on() {

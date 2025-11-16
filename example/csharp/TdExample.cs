@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -67,27 +67,32 @@ namespace TdExample
             }
             if (_authorizationState is TdApi.AuthorizationStateWaitTdlibParameters)
             {
-                TdApi.TdlibParameters parameters = new TdApi.TdlibParameters();
-                parameters.DatabaseDirectory = "tdlib";
-                parameters.UseMessageDatabase = true;
-                parameters.UseSecretChats = true;
-                parameters.ApiId = 94575;
-                parameters.ApiHash = "a3406de8d171bb422bb6ddf3bbd800e2";
-                parameters.SystemLanguageCode = "en";
-                parameters.DeviceModel = "Desktop";
-                parameters.ApplicationVersion = "1.0";
-                parameters.EnableStorageOptimizer = true;
+                TdApi.SetTdlibParameters request = new TdApi.SetTdlibParameters();
+                request.DatabaseDirectory = "tdlib";
+                request.UseMessageDatabase = true;
+                request.UseSecretChats = true;
+                request.ApiId = 94575;
+                request.ApiHash = "a3406de8d171bb422bb6ddf3bbd800e2";
+                request.SystemLanguageCode = "en";
+                request.DeviceModel = "Desktop";
+                request.ApplicationVersion = "1.0";
 
-                _client.Send(new TdApi.SetTdlibParameters(parameters), new AuthorizationRequestHandler());
-            }
-            else if (_authorizationState is TdApi.AuthorizationStateWaitEncryptionKey)
-            {
-                _client.Send(new TdApi.CheckDatabaseEncryptionKey(), new AuthorizationRequestHandler());
+                _client.Send(request, new AuthorizationRequestHandler());
             }
             else if (_authorizationState is TdApi.AuthorizationStateWaitPhoneNumber)
             {
                 string phoneNumber = ReadLine("Please enter phone number: ");
                 _client.Send(new TdApi.SetAuthenticationPhoneNumber(phoneNumber, null), new AuthorizationRequestHandler());
+            }
+            else if (_authorizationState is TdApi.AuthorizationStateWaitEmailAddress)
+            {
+                string emailAddress = ReadLine("Please enter email address: ");
+                _client.Send(new TdApi.SetAuthenticationEmailAddress(emailAddress), new AuthorizationRequestHandler());
+            }
+            else if (_authorizationState is TdApi.AuthorizationStateWaitEmailCode)
+            {
+                string code = ReadLine("Please enter email authentication code: ");
+                _client.Send(new TdApi.CheckAuthenticationEmailCode(new TdApi.EmailAddressAuthenticationCode(code)), new AuthorizationRequestHandler());
             }
             else if (_authorizationState is TdApi.AuthorizationStateWaitOtherDeviceConfirmation state)
             {
@@ -102,7 +107,7 @@ namespace TdExample
             {
                 string firstName = ReadLine("Please enter your first name: ");
                 string lastName = ReadLine("Please enter your last name: ");
-                _client.Send(new TdApi.RegisterUser(firstName, lastName), new AuthorizationRequestHandler());
+                _client.Send(new TdApi.RegisterUser(firstName, lastName, false), new AuthorizationRequestHandler());
             }
             else if (_authorizationState is TdApi.AuthorizationStateWaitPassword)
             {
@@ -204,8 +209,8 @@ namespace TdExample
             TdApi.InlineKeyboardButton[] row = { new TdApi.InlineKeyboardButton("https://telegram.org?1", new TdApi.InlineKeyboardButtonTypeUrl()), new TdApi.InlineKeyboardButton("https://telegram.org?2", new TdApi.InlineKeyboardButtonTypeUrl()), new TdApi.InlineKeyboardButton("https://telegram.org?3", new TdApi.InlineKeyboardButtonTypeUrl()) };
             TdApi.ReplyMarkup replyMarkup = new TdApi.ReplyMarkupInlineKeyboard(new TdApi.InlineKeyboardButton[][] { row, row, row });
 
-            TdApi.InputMessageContent content = new TdApi.InputMessageText(new TdApi.FormattedText(message, null), false, true);
-            _client.Send(new TdApi.SendMessage(chatId, 0, 0, null, replyMarkup, content), _defaultHandler);
+            TdApi.InputMessageContent content = new TdApi.InputMessageText(new TdApi.FormattedText(message, null), null, true);
+            _client.Send(new TdApi.SendMessage(chatId, null, null, null, replyMarkup, content), _defaultHandler);
         }
 
         static void Main()

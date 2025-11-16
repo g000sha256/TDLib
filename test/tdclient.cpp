@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -26,6 +26,7 @@
 #include "td/utils/port/path.h"
 #include "td/utils/port/sleep.h"
 #include "td/utils/port/thread.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Random.h"
 #include "td/utils/Slice.h"
 #include "td/utils/SliceBuilder.h"
@@ -145,7 +146,7 @@ class TestClient final : public td::Actor {
     td::rmrf(name_).ignore();
     auto old_context = set_context(std::make_shared<td::ActorContext>());
     set_tag(name_);
-    LOG(INFO) << "START UP!";
+    LOG(INFO) << "Start up!";
 
     td_client_ = td::create_actor<td::ClientActor>("Td-proxy", make_td_callback());
   }
@@ -203,39 +204,40 @@ class DoAuthentication final : public TestClinetTask {
       : name_(std::move(name)), phone_(std::move(phone)), code_(std::move(code)), promise_(std::move(promise)) {
   }
   void start_up() final {
-    send_query(td::make_tl_object<td::td_api::getAuthorizationState>(),
-               [this](auto res) { this->process_authorization_state(std::move(res)); });
+    send_query(td::make_tl_object<td::td_api::getOption>("version"),
+               [](auto res) { LOG(INFO) << td::td_api::to_string(res); });
   }
   void process_authorization_state(td::tl_object_ptr<td::td_api::Object> authorization_state) {
-    start_flag_ = true;
     td::tl_object_ptr<td::td_api::Function> function;
     switch (authorization_state->get_id()) {
-      case td::td_api::authorizationStateWaitEncryptionKey::ID:
-        function = td::make_tl_object<td::td_api::checkDatabaseEncryptionKey>();
-        break;
       case td::td_api::authorizationStateWaitPhoneNumber::ID:
         function = td::make_tl_object<td::td_api::setAuthenticationPhoneNumber>(phone_, nullptr);
+        break;
+      case td::td_api::authorizationStateWaitEmailAddress::ID:
+        function = td::make_tl_object<td::td_api::setAuthenticationEmailAddress>("alice_test@gmail.com");
+        break;
+      case td::td_api::authorizationStateWaitEmailCode::ID:
+        function = td::make_tl_object<td::td_api::checkAuthenticationEmailCode>(
+            td::make_tl_object<td::td_api::emailAddressAuthenticationCode>(code_));
         break;
       case td::td_api::authorizationStateWaitCode::ID:
         function = td::make_tl_object<td::td_api::checkAuthenticationCode>(code_);
         break;
       case td::td_api::authorizationStateWaitRegistration::ID:
-        function = td::make_tl_object<td::td_api::registerUser>(name_, "");
+        function = td::make_tl_object<td::td_api::registerUser>(name_, "", false);
         break;
       case td::td_api::authorizationStateWaitTdlibParameters::ID: {
-        auto parameters = td::td_api::make_object<td::td_api::tdlibParameters>();
-        parameters->use_test_dc_ = true;
-        parameters->database_directory_ = name_ + TD_DIR_SLASH;
-        parameters->use_message_database_ = true;
-        parameters->use_secret_chats_ = true;
-        parameters->api_id_ = 94575;
-        parameters->api_hash_ = "a3406de8d171bb422bb6ddf3bbd800e2";
-        parameters->system_language_code_ = "en";
-        parameters->device_model_ = "Desktop";
-        parameters->application_version_ = "tdclient-test";
-        parameters->ignore_file_names_ = false;
-        parameters->enable_storage_optimizer_ = true;
-        function = td::td_api::make_object<td::td_api::setTdlibParameters>(std::move(parameters));
+        auto request = td::td_api::make_object<td::td_api::setTdlibParameters>();
+        request->use_test_dc_ = true;
+        request->database_directory_ = name_ + TD_DIR_SLASH;
+        request->use_message_database_ = true;
+        request->use_secret_chats_ = true;
+        request->api_id_ = 94575;
+        request->api_hash_ = "a3406de8d171bb422bb6ddf3bbd800e2";
+        request->system_language_code_ = "en";
+        request->device_model_ = "Desktop";
+        request->application_version_ = "tdclient-test";
+        function = std::move(request);
         break;
       }
       case td::td_api::authorizationStateReady::ID:
@@ -248,7 +250,7 @@ class DoAuthentication final : public TestClinetTask {
     send_query(std::move(function), [](auto res) { LOG_CHECK(res->get_id() == td::td_api::ok::ID) << to_string(res); });
   }
   void on_authorization_ready() {
-    LOG(INFO) << "GOT AUTHORIZED";
+    LOG(INFO) << "Authorization is completed";
     stop();
   }
 
@@ -257,12 +259,8 @@ class DoAuthentication final : public TestClinetTask {
   td::string phone_;
   td::string code_;
   td::Promise<> promise_;
-  bool start_flag_{false};
 
   void process_update(std::shared_ptr<TestClient::Update> update) final {
-    if (!start_flag_) {
-      return;
-    }
     if (!update->object) {
       return;
     }
@@ -293,8 +291,9 @@ class SetUsername final : public TestClinetTask {
     CHECK(res->get_id() == td::td_api::user::ID);
     auto user = td::move_tl_object_as<td::td_api::user>(res);
     self_id_ = user->id_;
-    if (user->username_ != username_) {
-      LOG(INFO) << "SET USERNAME: " << username_;
+    auto current_username = user->usernames_ != nullptr ? user->usernames_->editable_username_ : td::string();
+    if (current_username != username_) {
+      LOG(INFO) << "Set username: " << username_;
       send_query(td::make_tl_object<td::td_api::setUsername>(username_), [this](auto res) {
         CHECK(res->get_id() == td::td_api::ok::ID);
         this->send_self_message();
@@ -311,10 +310,10 @@ class SetUsername final : public TestClinetTask {
       CHECK(res->get_id() == td::td_api::chat::ID);
       auto chat = td::move_tl_object_as<td::td_api::chat>(res);
       this->send_query(td::make_tl_object<td::td_api::sendMessage>(
-                           chat->id_, 0, 0, nullptr, nullptr,
+                           chat->id_, nullptr, nullptr, nullptr, nullptr,
                            td::make_tl_object<td::td_api::inputMessageText>(
                                td::make_tl_object<td::td_api::formattedText>(PSTRING() << tag_ << " INIT", td::Auto()),
-                               false, false)),
+                               nullptr, false)),
                        [](auto res) {});
     });
   }
@@ -330,7 +329,7 @@ class SetUsername final : public TestClinetTask {
         auto messageText = td::move_tl_object_as<td::td_api::messageText>(message->content_);
         auto text = messageText->text_->text_;
         if (text.substr(0, tag_.size()) == tag_) {
-          LOG(INFO) << "GOT SELF MESSAGE";
+          LOG(INFO) << "Receive self-message";
           return stop();
         }
       }
@@ -360,7 +359,7 @@ class CheckTestA final : public TestClinetTask {
           LOG_CHECK(text > previous_text_) << td::tag("now", text) << td::tag("previous", previous_text_);
           previous_text_ = text;
           cnt_--;
-          LOG(INFO) << "GOT " << td::tag("text", text) << td::tag("left", cnt_);
+          LOG(INFO) << "Receive " << td::tag("text", text) << td::tag("left", cnt_);
           if (cnt_ == 0) {
             return stop();
           }
@@ -382,10 +381,10 @@ class TestA final : public TestClinetTask {
       for (int i = 0; i < 20; i++) {
         this->send_query(
             td::make_tl_object<td::td_api::sendMessage>(
-                chat->id_, 0, 0, nullptr, nullptr,
+                chat->id_, nullptr, nullptr, nullptr, nullptr,
                 td::make_tl_object<td::td_api::inputMessageText>(
                     td::make_tl_object<td::td_api::formattedText>(PSTRING() << tag_ << " " << (1000 + i), td::Auto()),
-                    false, false)),
+                    nullptr, false)),
             [&](auto res) { this->stop(); });
       }
     });
@@ -427,14 +426,14 @@ class TestSecretChat final : public TestClinetTask {
           update_secret_chat->secret_chat_->state_->get_id() != td::td_api::secretChatStateReady::ID) {
         return;
       }
-      LOG(INFO) << "SEND ENCRYPTED MESSAGES";
+      LOG(INFO) << "Send encrypted messages";
       for (int i = 0; i < 20; i++) {
         send_query(
             td::make_tl_object<td::td_api::sendMessage>(
-                chat_id_, 0, 0, nullptr, nullptr,
+                chat_id_, nullptr, nullptr, nullptr, nullptr,
                 td::make_tl_object<td::td_api::inputMessageText>(
                     td::make_tl_object<td::td_api::formattedText>(PSTRING() << tag_ << " " << (1000 + i), td::Auto()),
-                    false, false)),
+                    nullptr, false)),
             [](auto res) {});
       }
     }
@@ -482,7 +481,7 @@ class TestFileGenerated final : public TestClinetTask {
   }
 
   void one_file() {
-    LOG(ERROR) << "Start ONE_FILE test";
+    LOG(ERROR) << "Start one_file test";
     auto file_path = PSTRING() << "test_documents" << TD_DIR_SLASH << "a.txt";
     td::mkpath(file_path).ensure();
     auto raw_file =
@@ -495,7 +494,7 @@ class TestFileGenerated final : public TestClinetTask {
     file.flush_write().ensure();  // important
     file.close();
     send_query(td::make_tl_object<td::td_api::sendMessage>(
-                   chat_id_, 0, 0, nullptr, nullptr,
+                   chat_id_, nullptr, nullptr, nullptr, nullptr,
                    td::make_tl_object<td::td_api::inputMessageDocument>(
                        td::make_tl_object<td::td_api::inputFileGenerated>(file_path, "square", 0),
                        td::make_tl_object<td::td_api::inputThumbnail>(
@@ -504,7 +503,7 @@ class TestFileGenerated final : public TestClinetTask {
                [](auto res) { check_td_error(res); });
 
     send_query(td::make_tl_object<td::td_api::sendMessage>(
-                   chat_id_, 0, 0, nullptr, nullptr,
+                   chat_id_, nullptr, nullptr, nullptr, nullptr,
                    td::make_tl_object<td::td_api::inputMessageDocument>(
                        td::make_tl_object<td::td_api::inputFileGenerated>(file_path, "square", 0), nullptr, true,
                        td::make_tl_object<td::td_api::formattedText>(tag_, td::Auto()))),
@@ -554,7 +553,7 @@ class TestFileGenerated final : public TestClinetTask {
         }
       }
       auto ready = std::ftell(to);
-      LOG(ERROR) << "READY: " << ready;
+      LOG(ERROR) << "Ready: " << ready;
       parent_->send_query(td::make_tl_object<td::td_api::setFileGenerationProgress>(
                               id_, 1039823 /*yeah, exact size of this file*/, td::narrow_cast<td::int32>(ready)),
                           [](auto result) { check_td_error(result); });
@@ -612,10 +611,10 @@ class CheckTestC final : public TestClinetTask {
 
   void one_file() {
     send_query(td::make_tl_object<td::td_api::sendMessage>(
-                   chat_id_, 0, 0, nullptr, nullptr,
+                   chat_id_, nullptr, nullptr, nullptr, nullptr,
                    td::make_tl_object<td::td_api::inputMessageText>(
                        td::make_tl_object<td::td_api::formattedText>(PSTRING() << tag_ << " ONE_FILE", td::Auto()),
-                       false, false)),
+                       nullptr, false)),
                [](auto res) { check_td_error(res); });
   }
 
@@ -631,7 +630,7 @@ class CheckTestC final : public TestClinetTask {
         auto text = messageDocument->caption_->text_;
         if (text.substr(0, tag_.size()) == tag_) {
           file_id_to_check_ = messageDocument->document_->document_->id_;
-          LOG(ERROR) << "GOT FILE " << to_string(messageDocument->document_->document_);
+          LOG(ERROR) << "Receive file " << to_string(messageDocument->document_->document_);
           send_query(td::make_tl_object<td::td_api::downloadFile>(file_id_to_check_, 1, 0, 0, false),
                      [](auto res) { check_td_error(res); });
         }
@@ -691,12 +690,12 @@ class LoginTestActor final : public td::Actor {
     td::send_closure(alice_, &TestClient::add_listener,
                      td::make_unique<DoAuthentication>(
                          "alice", alice_phone_, "33333",
-                         td::PromiseCreator::event(self_closure(this, &LoginTestActor::start_up_fence_dec))));
+                         td::create_event_promise(self_closure(this, &LoginTestActor::start_up_fence_dec))));
 
     td::send_closure(bob_, &TestClient::add_listener,
                      td::make_unique<DoAuthentication>(
                          "bob", bob_phone_, "33333",
-                         td::PromiseCreator::event(self_closure(this, &LoginTestActor::start_up_fence_dec))));
+                         td::create_event_promise(self_closure(this, &LoginTestActor::start_up_fence_dec))));
   }
 
   int start_up_fence_ = 3;
@@ -722,18 +721,18 @@ class LoginTestActor final : public td::Actor {
         td::Promise<> promise_;
       };
       td::create_actor<WaitActor>("WaitActor", 2,
-                                  td::PromiseCreator::event(self_closure(this, &LoginTestActor::start_up_fence_dec)))
+                                  td::create_event_promise(self_closure(this, &LoginTestActor::start_up_fence_dec)))
           .release();
     }
   }
 
   void init() {
     td::send_closure(alice_, &TestClient::add_listener,
-                     td::make_unique<SetUsername>(alice_username_, td::PromiseCreator::event(self_closure(
+                     td::make_unique<SetUsername>(alice_username_, td::create_event_promise(self_closure(
                                                                        this, &LoginTestActor::init_fence_dec))));
     td::send_closure(bob_, &TestClient::add_listener,
-                     td::make_unique<SetUsername>(bob_username_, td::PromiseCreator::event(self_closure(
-                                                                     this, &LoginTestActor::init_fence_dec))));
+                     td::make_unique<SetUsername>(
+                         bob_username_, td::create_event_promise(self_closure(this, &LoginTestActor::init_fence_dec))));
   }
 
   int init_fence_ = 2;
@@ -757,10 +756,10 @@ class LoginTestActor final : public td::Actor {
 
     td::send_closure(bob_, &TestClient::add_listener,
                      td::make_unique<CheckTestA>(
-                         alice_tag, td::PromiseCreator::event(self_closure(this, &LoginTestActor::test_a_fence))));
+                         alice_tag, td::create_event_promise(self_closure(this, &LoginTestActor::test_a_fence))));
     td::send_closure(alice_, &TestClient::add_listener,
                      td::make_unique<CheckTestA>(
-                         bob_tag, td::PromiseCreator::event(self_closure(this, &LoginTestActor::test_a_fence))));
+                         bob_tag, td::create_event_promise(self_closure(this, &LoginTestActor::test_a_fence))));
 
     td::send_closure(alice_, &TestClient::add_listener, td::make_unique<TestA>(alice_tag, bob_username_));
     td::send_closure(bob_, &TestClient::add_listener, td::make_unique<TestA>(bob_tag, alice_username_));
@@ -791,7 +790,7 @@ class LoginTestActor final : public td::Actor {
 
     td::send_closure(
         bob_, &TestClient::add_listener,
-        td::make_unique<CheckTestA>(tag, td::PromiseCreator::event(self_closure(this, &LoginTestActor::test_b_fence))));
+        td::make_unique<CheckTestA>(tag, td::create_event_promise(self_closure(this, &LoginTestActor::test_b_fence))));
     td::send_closure(alice_, &TestClient::add_listener, td::make_unique<TestSecretChat>(tag, bob_username_));
   }
 
@@ -802,7 +801,7 @@ class LoginTestActor final : public td::Actor {
     td::send_closure(
         bob_, &TestClient::add_listener,
         td::make_unique<CheckTestC>(alice_username_, tag,
-                                    td::PromiseCreator::event(self_closure(this, &LoginTestActor::test_c_fence))));
+                                    td::create_event_promise(self_closure(this, &LoginTestActor::test_c_fence))));
     td::send_closure(alice_, &TestClient::add_listener, td::make_unique<TestFileGenerated>(tag, bob_username_));
   }
 
@@ -817,9 +816,9 @@ class LoginTestActor final : public td::Actor {
 
   void finish() {
     td::send_closure(alice_, &TestClient::close,
-                     td::PromiseCreator::event(self_closure(this, &LoginTestActor::finish_fence)));
+                     td::create_event_promise(self_closure(this, &LoginTestActor::finish_fence)));
     td::send_closure(bob_, &TestClient::close,
-                     td::PromiseCreator::event(self_closure(this, &LoginTestActor::finish_fence)));
+                     td::create_event_promise(self_closure(this, &LoginTestActor::finish_fence)));
   }
 };
 
@@ -828,7 +827,6 @@ class Tdclient_login final : public td::Test {
   using Test::Test;
   bool step() final {
     if (!is_inited_) {
-      sched_.init(4);
       sched_.create_actor_unsafe<LoginTestActor>(0, "LoginTestActor", &result_).release();
       sched_.start();
       is_inited_ = true;
@@ -848,7 +846,7 @@ class Tdclient_login final : public td::Test {
 
  private:
   bool is_inited_ = false;
-  td::ConcurrentScheduler sched_;
+  td::ConcurrentScheduler sched_{4, 0};
   td::Status result_;
 };
 //RegisterTest<Tdclient_login> Tdclient_login("Tdclient_login");

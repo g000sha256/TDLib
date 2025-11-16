@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -23,7 +23,7 @@
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 
-class Handshake {
+class BasicHandshake {
  public:
   struct KeyPair {
     td::SecureString private_key;
@@ -75,7 +75,7 @@ class Handshake {
   static td::Result<td::SecureString> calc_shared_secret(td::Slice private_key, td::Slice other_public_key) {
     auto pkey_private = EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519, nullptr, private_key.ubegin(), 32);
     if (pkey_private == nullptr) {
-      return td::Status::Error("Invalid X25520 private key");
+      return td::Status::Error("Invalid X25519 private key");
     }
     SCOPE_EXIT {
       EVP_PKEY_free(pkey_private);
@@ -120,6 +120,29 @@ class Handshake {
     return std::move(result);
   }
 
+  static td::Result<td::SecureString> get_public_key(td::Slice private_key) {
+    auto pkey_private = EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519, nullptr, private_key.ubegin(), 32);
+    if (pkey_private == nullptr) {
+      return td::Status::Error("Invalid X25519 private key");
+    }
+    SCOPE_EXIT {
+      EVP_PKEY_free(pkey_private);
+    };
+
+    auto func = &EVP_PKEY_get_raw_public_key;
+    size_t len = 0;
+    if (func(pkey_private, nullptr, &len) == 0) {
+      return td::Status::Error("Failed to get raw key length");
+    }
+    CHECK(len == 32);
+
+    td::SecureString result(len);
+    if (func(pkey_private, result.as_mutable_slice().ubegin(), &len) == 0) {
+      return td::Status::Error("Failed to get raw key");
+    }
+    return std::move(result);
+  }
+
  private:
   static td::Result<td::SecureString> X25519_key_from_PKEY(EVP_PKEY *pkey, bool is_private) {
     auto func = is_private ? &EVP_PKEY_get_raw_private_key : &EVP_PKEY_get_raw_public_key;
@@ -152,49 +175,45 @@ class Handshake {
   }
 };
 
-struct HandshakeTest {
-  Handshake::KeyPair alice;
-  Handshake::KeyPair bob;
+struct BasicHandshakeTest {
+  BasicHandshake::KeyPair alice;
+  BasicHandshake::KeyPair bob;
 
   td::SecureString shared_secret;
   td::SecureString key;
 };
 
-namespace td {
-
-static void KDF3(Slice auth_key, const UInt128 &msg_key, int X, UInt256 *aes_key, UInt128 *aes_iv) {
-  uint8 buf_raw[36 + 16];
-  MutableSlice buf(buf_raw, 36 + 16);
-  Slice msg_key_slice = as_slice(msg_key);
+static void KDF3(td::Slice auth_key, const td::UInt128 &msg_key, int X, td::UInt256 *aes_key, td::UInt128 *aes_iv) {
+  td::uint8 buf_raw[36 + 16];
+  td::MutableSlice buf(buf_raw, 36 + 16);
+  td::Slice msg_key_slice = td::as_slice(msg_key);
 
   // sha256_a = SHA256 (msg_key + substr(auth_key, x, 36));
   buf.copy_from(msg_key_slice);
   buf.substr(16, 36).copy_from(auth_key.substr(X, 36));
-  uint8 sha256_a_raw[32];
-  MutableSlice sha256_a(sha256_a_raw, 32);
+  td::uint8 sha256_a_raw[32];
+  td::MutableSlice sha256_a(sha256_a_raw, 32);
   sha256(buf, sha256_a);
 
   // sha256_b = SHA256 (substr(auth_key, 40+x, 36) + msg_key);
   buf.copy_from(auth_key.substr(40 + X, 36));
   buf.substr(36).copy_from(msg_key_slice);
-  uint8 sha256_b_raw[32];
-  MutableSlice sha256_b(sha256_b_raw, 32);
+  td::uint8 sha256_b_raw[32];
+  td::MutableSlice sha256_b(sha256_b_raw, 32);
   sha256(buf, sha256_b);
 
   // aes_key = substr(sha256_a, 0, 8) + substr(sha256_b, 8, 16) + substr(sha256_a, 24, 8);
-  MutableSlice aes_key_slice(aes_key->raw, sizeof(aes_key->raw));
+  td::MutableSlice aes_key_slice(aes_key->raw, sizeof(aes_key->raw));
   aes_key_slice.copy_from(sha256_a.substr(0, 8));
   aes_key_slice.substr(8).copy_from(sha256_b.substr(8, 16));
   aes_key_slice.substr(24).copy_from(sha256_a.substr(24, 8));
 
   // aes_iv = substr(sha256_b, 0, 4) + substr(sha256_a, 8, 8) + substr(sha256_b, 24, 4);
-  MutableSlice aes_iv_slice(aes_iv->raw, sizeof(aes_iv->raw));
+  td::MutableSlice aes_iv_slice(aes_iv->raw, sizeof(aes_iv->raw));
   aes_iv_slice.copy_from(sha256_b.substr(0, 4));
   aes_iv_slice.substr(4).copy_from(sha256_a.substr(8, 8));
   aes_iv_slice.substr(12).copy_from(sha256_b.substr(24, 4));
 }
-
-}  // namespace td
 
 static td::SecureString encrypt(td::Slice key, td::Slice data, td::int32 seqno, int X) {
   td::SecureString res(data.size() + 4 + 16);
@@ -212,7 +231,7 @@ static td::SecureString encrypt(td::Slice key, td::Slice data, td::int32 seqno, 
   td::UInt128 msg_key = td::mtproto::Transport::calc_message_key2(auth_key, X, payload).second;
   td::UInt256 aes_key;
   td::UInt128 aes_iv;
-  td::KDF3(key, msg_key, X, &aes_key, &aes_iv);
+  KDF3(key, msg_key, X, &aes_key, &aes_iv);
   td::AesCtrState aes;
   aes.init(aes_key.as_slice(), aes_iv.as_slice());
   aes.encrypt(payload, payload);
@@ -220,34 +239,36 @@ static td::SecureString encrypt(td::Slice key, td::Slice data, td::int32 seqno, 
   return res;
 }
 
-static HandshakeTest gen_test() {
-  HandshakeTest res;
-  res.alice = Handshake::generate_key_pair().move_as_ok();
+static BasicHandshakeTest gen_test() {
+  BasicHandshakeTest res;
+  res.alice = BasicHandshake::generate_key_pair().move_as_ok();
 
-  res.bob = Handshake::generate_key_pair().move_as_ok();
-  res.shared_secret = Handshake::calc_shared_secret(res.alice.private_key, res.bob.public_key).move_as_ok();
-  res.key = Handshake::expand_secret(res.shared_secret);
+  res.bob = BasicHandshake::generate_key_pair().move_as_ok();
+  res.shared_secret = BasicHandshake::calc_shared_secret(res.alice.private_key, res.bob.public_key).move_as_ok();
+  res.key = BasicHandshake::expand_secret(res.shared_secret);
   return res;
 }
 
-static void run_test(const HandshakeTest &test) {
-  auto alice_secret = Handshake::calc_shared_secret(test.alice.private_key, test.bob.public_key).move_as_ok();
-  auto bob_secret = Handshake::calc_shared_secret(test.bob.private_key, test.alice.public_key).move_as_ok();
-  auto key = Handshake::expand_secret(alice_secret);
+static void run_test(const BasicHandshakeTest &test) {
+  CHECK(BasicHandshake::get_public_key(test.alice.private_key).move_as_ok() == test.alice.public_key);
+  CHECK(BasicHandshake::get_public_key(test.bob.private_key).move_as_ok() == test.bob.public_key);
+  auto alice_secret = BasicHandshake::calc_shared_secret(test.alice.private_key, test.bob.public_key).move_as_ok();
+  auto bob_secret = BasicHandshake::calc_shared_secret(test.bob.private_key, test.alice.public_key).move_as_ok();
+  auto key = BasicHandshake::expand_secret(alice_secret);
   CHECK(alice_secret == bob_secret);
   CHECK(alice_secret == test.shared_secret);
   LOG(ERROR) << "Key\n\t" << td::base64url_encode(key) << "\n";
   CHECK(key == test.key);
 }
 
-static td::StringBuilder &operator<<(td::StringBuilder &sb, const Handshake::KeyPair &key_pair) {
+static td::StringBuilder &operator<<(td::StringBuilder &sb, const BasicHandshake::KeyPair &key_pair) {
   sb << "\tpublic_key (base64url) = " << td::base64url_encode(key_pair.public_key) << "\n";
   sb << "\tprivate_key (base64url) = " << td::base64url_encode(key_pair.private_key) << "\n";
-  sb << "\tprivate_key (pem) = \n" << Handshake::privateKeyToPem(key_pair.private_key).ok() << "\n";
+  sb << "\tprivate_key (pem) = \n" << BasicHandshake::privateKeyToPem(key_pair.private_key).ok() << "\n";
   return sb;
 }
 
-static td::StringBuilder &operator<<(td::StringBuilder &sb, const HandshakeTest &test) {
+static td::StringBuilder &operator<<(td::StringBuilder &sb, const BasicHandshakeTest &test) {
   sb << "Alice\n" << test.alice;
   sb << "Bob\n" << test.bob;
   sb << "SharedSecret\n\t" << td::base64url_encode(test.shared_secret) << "\n";
@@ -259,8 +280,8 @@ static td::StringBuilder &operator<<(td::StringBuilder &sb, const HandshakeTest 
   return sb;
 }
 
-static HandshakeTest pregenerated_test() {
-  HandshakeTest test;
+static BasicHandshakeTest pregenerated_test() {
+  BasicHandshakeTest test;
   test.alice.public_key = td::base64url_decode_secure("QlCME5fXLyyQQWeYnBiGAZbmzuD4ayOuADCFgmioOBY").move_as_ok();
   test.alice.private_key = td::base64url_decode_secure("8NZGWKfRCJfiks74RG9_xHmYydarLiRsoq8VcJGPglg").move_as_ok();
   test.bob.public_key = td::base64url_decode_secure("I1yzfmMCZzlI7xwMj1FJ3O3I3_aEUtv6CxbHiDGzr18").move_as_ok();

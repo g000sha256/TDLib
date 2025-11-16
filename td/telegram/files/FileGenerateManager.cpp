@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -36,10 +36,10 @@ namespace td {
 
 class FileGenerateActor : public Actor {
  public:
-  virtual void file_generate_write_part(int32 offset, string data, Promise<> promise) {
+  virtual void file_generate_write_part(int64 offset, string data, Promise<> promise) {
     LOG(ERROR) << "Receive unexpected file_generate_write_part";
   }
-  virtual void file_generate_progress(int32 expected_size, int32 local_prefix_size, Promise<> promise) = 0;
+  virtual void file_generate_progress(int64 expected_size, int64 local_prefix_size, Promise<> promise) = 0;
   virtual void file_generate_finish(Status status, Promise<> promise) = 0;
 };
 
@@ -49,7 +49,7 @@ class FileDownloadGenerateActor final : public FileGenerateActor {
                             ActorShared<> parent)
       : file_type_(file_type), file_id_(file_id), callback_(std::move(callback)), parent_(std::move(parent)) {
   }
-  void file_generate_progress(int32 expected_size, int32 local_prefix_size, Promise<> promise) final {
+  void file_generate_progress(int64 expected_size, int64 local_prefix_size, Promise<> promise) final {
     UNREACHABLE();
   }
   void file_generate_finish(Status status, Promise<> promise) final {
@@ -59,6 +59,7 @@ class FileDownloadGenerateActor final : public FileGenerateActor {
  private:
   FileType file_type_;
   FileId file_id_;
+  int64 internal_download_id_ = 0;
   unique_ptr<FileGenerateCallback> callback_;
   ActorShared<> parent_;
 
@@ -82,11 +83,12 @@ class FileDownloadGenerateActor final : public FileGenerateActor {
       ActorId<FileDownloadGenerateActor> parent_;
     };
 
-    send_closure(G()->file_manager(), &FileManager::download, file_id_, std::make_shared<Callback>(actor_id(this)), 1,
-                 -1, -1);
+    internal_download_id_ = FileManager::get_internal_download_id();
+    send_closure(G()->file_manager(), &FileManager::download, file_id_, internal_download_id_,
+                 std::make_shared<Callback>(actor_id(this)), 1, -1, -1, Promise<td_api::object_ptr<td_api::file>>());
   }
   void hangup() final {
-    send_closure(G()->file_manager(), &FileManager::download, file_id_, nullptr, 0, -1, -1);
+    send_closure(G()->file_manager(), &FileManager::cancel_download, file_id_, internal_download_id_, false);
     stop();
   }
 
@@ -95,8 +97,9 @@ class FileDownloadGenerateActor final : public FileGenerateActor {
                 [file_type = file_type_, file_id = file_id_, callback = std::move(callback_)]() mutable {
                   auto file_view = G()->td().get_actor_unsafe()->file_manager_->get_file_view(file_id);
                   CHECK(!file_view.empty());
-                  if (file_view.has_local_location()) {
-                    auto location = file_view.local_location();
+                  const auto *full_local_location = file_view.get_full_local_location();
+                  if (full_local_location != nullptr) {
+                    auto location = *full_local_location;
                     location.file_type_ = file_type;
                     callback->on_ok(std::move(location));
                   } else {
@@ -112,12 +115,12 @@ class FileDownloadGenerateActor final : public FileGenerateActor {
   }
 };
 
-class MapDownloadGenerateActor final : public FileGenerateActor {
+class WebFileDownloadGenerateActor final : public FileGenerateActor {
  public:
-  MapDownloadGenerateActor(string conversion, unique_ptr<FileGenerateCallback> callback, ActorShared<> parent)
+  WebFileDownloadGenerateActor(string conversion, unique_ptr<FileGenerateCallback> callback, ActorShared<> parent)
       : conversion_(std::move(conversion)), callback_(std::move(callback)), parent_(std::move(parent)) {
   }
-  void file_generate_progress(int32 expected_size, int32 local_prefix_size, Promise<> promise) final {
+  void file_generate_progress(int64 expected_size, int64 local_prefix_size, Promise<> promise) final {
     UNREACHABLE();
   }
   void file_generate_finish(Status status, Promise<> promise) final {
@@ -131,25 +134,47 @@ class MapDownloadGenerateActor final : public FileGenerateActor {
   string file_name_;
 
   class Callback final : public NetQueryCallback {
-    ActorId<MapDownloadGenerateActor> parent_;
+    ActorId<WebFileDownloadGenerateActor> parent_;
 
    public:
-    explicit Callback(ActorId<MapDownloadGenerateActor> parent) : parent_(parent) {
+    explicit Callback(ActorId<WebFileDownloadGenerateActor> parent) : parent_(parent) {
     }
 
     void on_result(NetQueryPtr query) final {
-      send_closure(parent_, &MapDownloadGenerateActor::on_result, std::move(query));
+      send_closure(parent_, &WebFileDownloadGenerateActor::on_result, std::move(query));
     }
 
     void hangup_shared() final {
-      send_closure(parent_, &MapDownloadGenerateActor::hangup_shared);
+      send_closure(parent_, &WebFileDownloadGenerateActor::hangup_shared);
     }
   };
   ActorOwn<NetQueryCallback> net_callback_;
 
-  Result<tl_object_ptr<telegram_api::inputWebFileGeoPointLocation>> parse_conversion() {
+  Result<telegram_api::object_ptr<telegram_api::InputWebFileLocation>> parse_conversion() {
     auto parts = full_split(Slice(conversion_), '#');
-    if (parts.size() != 9 || !parts[0].empty() || parts[1] != "map" || !parts[8].empty()) {
+    if (parts.size() <= 2 || !parts[0].empty() || !parts.back().empty()) {
+      return Status::Error("Wrong conversion");
+    }
+
+    if (parts.size() == 6 && parts[1] == "audio_t") {
+      // music thumbnail
+      if (parts[2].empty() && parts[3].empty()) {
+        return Status::Error("Title or performer must be non-empty");
+      }
+      if (parts[4] != "0" && parts[4] != "1") {
+        return Status::Error("Invalid conversion");
+      }
+
+      bool is_small = parts[4][0] == '1';
+      file_name_ = PSTRING() << "Album cover " << (is_small ? "thumbnail " : "") << "for " << parts[3] << " - "
+                             << parts[2] << ".jpg";
+
+      int32 flags = telegram_api::inputWebFileAudioAlbumThumbLocation::TITLE_MASK;
+      return telegram_api::make_object<telegram_api::inputWebFileAudioAlbumThumbLocation>(
+          flags, is_small, nullptr, parts[2].str(), parts[3].str());
+    }
+
+    if (parts.size() != 9 || parts[1] != "map") {
       return Status::Error("Wrong conversion");
     }
 
@@ -184,9 +209,9 @@ class MapDownloadGenerateActor final : public FileGenerateActor {
     double latitude = 90 - 360 * std::atan(std::exp(((y + 0.1) / size - 0.5) * 2 * PI)) / PI;
 
     int64 access_hash = G()->get_location_access_hash(latitude, longitude);
-    return make_tl_object<telegram_api::inputWebFileGeoPointLocation>(
-        make_tl_object<telegram_api::inputGeoPoint>(0, latitude, longitude, 0), access_hash, width, height, zoom,
-        scale);
+    return telegram_api::make_object<telegram_api::inputWebFileGeoPointLocation>(
+        telegram_api::make_object<telegram_api::inputGeoPoint>(0, latitude, longitude, 0), access_hash, width, height,
+        zoom, scale);
   }
 
   void start_up() final {
@@ -196,11 +221,11 @@ class MapDownloadGenerateActor final : public FileGenerateActor {
       return on_error(r_input_web_file.move_as_error());
     }
 
-    net_callback_ = create_actor<Callback>("MapDownloadGenerateCallback", actor_id(this));
+    net_callback_ = create_actor<Callback>("WebFileDownloadGenerateCallback", actor_id(this));
 
     LOG(INFO) << "Download " << conversion_;
     auto query =
-        G()->net_query_creator().create(telegram_api::upload_getWebFile(r_input_web_file.move_as_ok(), 0, 1 << 20),
+        G()->net_query_creator().create(telegram_api::upload_getWebFile(r_input_web_file.move_as_ok(), 0, 1 << 20), {},
                                         G()->get_webfile_dc_id(), NetQuery::Type::DownloadSmall);
     G()->net_query_dispatcher().dispatch_with_callback(std::move(query), {net_callback_.get(), 0});
   }
@@ -219,7 +244,7 @@ class MapDownloadGenerateActor final : public FileGenerateActor {
     TRY_RESULT(web_file, fetch_result<telegram_api::upload_getWebFile>(std::move(query)));
 
     if (static_cast<size_t>(web_file->size_) != web_file->bytes_.size()) {
-      LOG(ERROR) << "Failed to download map of size " << web_file->size_;
+      LOG(ERROR) << "Failed to download web file of size " << web_file->size_;
       return Status::Error("File is too big");
     }
 
@@ -232,13 +257,13 @@ class MapDownloadGenerateActor final : public FileGenerateActor {
   }
 
   void hangup_shared() final {
-    on_error(Status::Error(1, "Canceled"));
+    on_error(Status::Error(-1, "Canceled"));
   }
 };
 
 class FileExternalGenerateActor final : public FileGenerateActor {
  public:
-  FileExternalGenerateActor(uint64 query_id, const FullGenerateFileLocation &generate_location,
+  FileExternalGenerateActor(FileGenerateManager::QueryId query_id, const FullGenerateFileLocation &generate_location,
                             const LocalFileLocation &local_location, string name,
                             unique_ptr<FileGenerateCallback> callback, ActorShared<> parent)
       : query_id_(query_id)
@@ -249,11 +274,11 @@ class FileExternalGenerateActor final : public FileGenerateActor {
       , parent_(std::move(parent)) {
   }
 
-  void file_generate_write_part(int32 offset, string data, Promise<> promise) final {
+  void file_generate_write_part(int64 offset, string data, Promise<> promise) final {
     check_status(do_file_generate_write_part(offset, data), std::move(promise));
   }
 
-  void file_generate_progress(int32 expected_size, int32 local_prefix_size, Promise<> promise) final {
+  void file_generate_progress(int64 expected_size, int64 local_prefix_size, Promise<> promise) final {
     check_status(do_file_generate_progress(expected_size, local_prefix_size), std::move(promise));
   }
 
@@ -267,7 +292,7 @@ class FileExternalGenerateActor final : public FileGenerateActor {
   }
 
  private:
-  uint64 query_id_;
+  FileGenerateManager::QueryId query_id_;
   FullGenerateFileLocation generate_location_;
   LocalFileLocation local_;
   string name_;
@@ -302,10 +327,10 @@ class FileExternalGenerateActor final : public FileGenerateActor {
             static_cast<int64>(query_id_), generate_location_.original_path_, path_, generate_location_.conversion_));
   }
   void hangup() final {
-    check_status(Status::Error(1, "Canceled"));
+    check_status(Status::Error(-1, "Canceled"));
   }
 
-  Status do_file_generate_write_part(int32 offset, const string &data) {
+  Status do_file_generate_write_part(int64 offset, const string &data) {
     if (offset < 0) {
       return Status::Error("Wrong offset specified");
     }
@@ -319,20 +344,18 @@ class FileExternalGenerateActor final : public FileGenerateActor {
     return Status::OK();
   }
 
-  Status do_file_generate_progress(int32 expected_size, int32 local_prefix_size) {
+  Status do_file_generate_progress(int64 expected_size, int64 local_prefix_size) {
     if (local_prefix_size < 0) {
-      return Status::Error(1, "Invalid local prefix size");
+      return Status::Error(400, "Invalid local prefix size");
     }
     callback_->on_partial_generate(PartialLocalFileLocation{generate_location_.file_type_, local_prefix_size, path_, "",
-                                                            Bitmask(Bitmask::Ones{}, 1).encode()},
+                                                            Bitmask(Bitmask::Ones{}, 1).encode(), local_prefix_size},
                                    expected_size);
     return Status::OK();
   }
 
   Status do_file_generate_finish() {
-    auto dir = get_files_dir(generate_location_.file_type_);
-
-    TRY_RESULT(perm_path, create_from_temp(path_, dir, name_));
+    TRY_RESULT(perm_path, create_from_temp(generate_location_.file_type_, path_, name_));
     callback_->on_ok(FullLocalFileLocation(generate_location_.file_type_, std::move(perm_path), 0));
     callback_.reset();
     stop();
@@ -341,10 +364,10 @@ class FileExternalGenerateActor final : public FileGenerateActor {
 
   void check_status(Status status, Promise<> promise = Promise<>()) {
     if (promise) {
-      if (status.is_ok() || status.code() == 1) {
+      if (status.is_ok() || status.code() == -1) {
         promise.set_value(Unit());
       } else {
-        promise.set_error(Status::Error(400, status.message()));
+        promise.set_error(400, status.message());
       }
     }
 
@@ -364,8 +387,8 @@ class FileExternalGenerateActor final : public FileGenerateActor {
 };
 
 FileGenerateManager::Query::~Query() = default;
-FileGenerateManager::Query::Query(Query &&other) noexcept = default;
-FileGenerateManager::Query &FileGenerateManager::Query::operator=(Query &&other) noexcept = default;
+FileGenerateManager::Query::Query(Query &&) noexcept = default;
+FileGenerateManager::Query &FileGenerateManager::Query::operator=(Query &&) noexcept = default;
 
 static Status check_mtime(std::string &conversion, CSlice original_path) {
   if (original_path.empty()) {
@@ -388,7 +411,7 @@ static Status check_mtime(std::string &conversion, CSlice original_path) {
   conversion = parser.read_all().str();
   auto r_stat = stat(original_path);
   uint64 actual_mtime = r_stat.is_ok() ? r_stat.ok().mtime_nsec_ : 0;
-  if (FileManager::are_modification_times_equal(expected_mtime, actual_mtime)) {
+  if (are_modification_times_equal(expected_mtime, actual_mtime)) {
     LOG(DEBUG) << "File \"" << original_path << "\" modification time " << actual_mtime << " matches";
     return Status::OK();
   }
@@ -397,7 +420,7 @@ static Status check_mtime(std::string &conversion, CSlice original_path) {
                                 << tag("actual modification time", actual_mtime));
 }
 
-void FileGenerateManager::generate_file(uint64 query_id, FullGenerateFileLocation generate_location,
+void FileGenerateManager::generate_file(QueryId query_id, FullGenerateFileLocation generate_location,
                                         const LocalFileLocation &local_location, string name,
                                         unique_ptr<FileGenerateCallback> callback) {
   LOG(INFO) << "Begin to generate file with " << generate_location;
@@ -419,9 +442,10 @@ void FileGenerateManager::generate_file(uint64 query_id, FullGenerateFileLocatio
     auto file_id = FileId(to_integer<int32>(conversion.substr(file_id_query.size())), 0);
     query.worker_ = create_actor<FileDownloadGenerateActor>("FileDownloadGenerateActor", generate_location.file_type_,
                                                             file_id, std::move(callback), std::move(parent));
-  } else if (begins_with(conversion, "#map#") && generate_location.original_path_.empty()) {
-    query.worker_ = create_actor<MapDownloadGenerateActor>(
-        "MapDownloadGenerateActor", std::move(generate_location.conversion_), std::move(callback), std::move(parent));
+  } else if (FileManager::is_remotely_generated_file(conversion) && generate_location.original_path_.empty()) {
+    query.worker_ = create_actor<WebFileDownloadGenerateActor>("WebFileDownloadGenerateActor",
+                                                               std::move(generate_location.conversion_),
+                                                               std::move(callback), std::move(parent));
   } else {
     query.worker_ = create_actor<FileExternalGenerateActor>("FileExternalGenerationActor", query_id, generate_location,
                                                             local_location, std::move(name), std::move(callback),
@@ -429,7 +453,7 @@ void FileGenerateManager::generate_file(uint64 query_id, FullGenerateFileLocatio
   }
 }
 
-void FileGenerateManager::cancel(uint64 query_id) {
+void FileGenerateManager::cancel(QueryId query_id) {
   auto it = query_id_to_query_.find(query_id);
   if (it == query_id_to_query_.end()) {
     return;
@@ -437,35 +461,39 @@ void FileGenerateManager::cancel(uint64 query_id) {
   it->second.worker_.reset();
 }
 
-void FileGenerateManager::external_file_generate_write_part(uint64 query_id, int32 offset, string data,
+void FileGenerateManager::external_file_generate_write_part(QueryId query_id, int64 offset, string data,
                                                             Promise<> promise) {
   auto it = query_id_to_query_.find(query_id);
   if (it == query_id_to_query_.end()) {
-    return promise.set_error(Status::Error(400, "Unknown generation_id"));
+    return promise.set_error(400, "Unknown generation_id");
   }
+  auto safe_promise = SafePromise<>(std::move(promise), Status::Error(400, "Generation has already been finished"));
   send_closure(it->second.worker_, &FileGenerateActor::file_generate_write_part, offset, std::move(data),
-               std::move(promise));
+               std::move(safe_promise));
 }
 
-void FileGenerateManager::external_file_generate_progress(uint64 query_id, int32 expected_size, int32 local_prefix_size,
-                                                          Promise<> promise) {
+void FileGenerateManager::external_file_generate_progress(QueryId query_id, int64 expected_size,
+                                                          int64 local_prefix_size, Promise<> promise) {
   auto it = query_id_to_query_.find(query_id);
   if (it == query_id_to_query_.end()) {
-    return promise.set_error(Status::Error(400, "Unknown generation_id"));
+    return promise.set_error(400, "Unknown generation_id");
   }
+  auto safe_promise = SafePromise<>(std::move(promise), Status::Error(400, "Generation has already been finished"));
   send_closure(it->second.worker_, &FileGenerateActor::file_generate_progress, expected_size, local_prefix_size,
-               std::move(promise));
+               std::move(safe_promise));
 }
 
-void FileGenerateManager::external_file_generate_finish(uint64 query_id, Status status, Promise<> promise) {
+void FileGenerateManager::external_file_generate_finish(QueryId query_id, Status status, Promise<> promise) {
   auto it = query_id_to_query_.find(query_id);
   if (it == query_id_to_query_.end()) {
-    return promise.set_error(Status::Error(400, "Unknown generation_id"));
+    return promise.set_error(400, "Unknown generation_id");
   }
-  send_closure(it->second.worker_, &FileGenerateActor::file_generate_finish, std::move(status), std::move(promise));
+  auto safe_promise = SafePromise<>(std::move(promise), Status::Error(400, "Generation has already been finished"));
+  send_closure(it->second.worker_, &FileGenerateActor::file_generate_finish, std::move(status),
+               std::move(safe_promise));
 }
 
-void FileGenerateManager::do_cancel(uint64 query_id) {
+void FileGenerateManager::do_cancel(QueryId query_id) {
   query_id_to_query_.erase(query_id);
 }
 

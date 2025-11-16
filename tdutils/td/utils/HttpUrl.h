@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -48,10 +48,14 @@ class HttpUrlQuery {
   vector<string> path_;
   vector<std::pair<string, string>> args_;
 
+  bool has_arg(Slice key) const;
+
   Slice get_arg(Slice key) const;
 };
 
 HttpUrlQuery parse_url_query(Slice query);
+
+string get_url_host(Slice url);
 
 string get_url_query_file_name(const string &query);
 

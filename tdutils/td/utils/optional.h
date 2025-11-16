@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -8,6 +8,7 @@
 
 #include "td/utils/common.h"
 #include "td/utils/Status.h"
+#include "td/utils/StringBuilder.h"
 
 #include <type_traits>
 #include <utility>
@@ -42,11 +43,11 @@ class optional {
     return *this;
   }
 
-  optional(optional &&other) = default;
-  optional &operator=(optional &&other) = default;
+  optional(optional &&) = default;
+  optional &operator=(optional &&) = default;
   ~optional() = default;
 
-  explicit operator bool() const {
+  explicit operator bool() const noexcept {
     return impl_.is_ok();
   }
   T &value() {
@@ -58,6 +59,9 @@ class optional {
     return impl_.ok_ref();
   }
   T &operator*() {
+    return value();
+  }
+  const T &operator*() const {
     return value();
   }
   T unwrap() {
@@ -89,11 +93,37 @@ struct optional<T, false> : optional<T, true> {
 
   using optional<T, true>::optional;
 
-  optional(const optional &other) = delete;
-  optional &operator=(const optional &other) = delete;
+  optional(const optional &) = delete;
+  optional &operator=(const optional &) = delete;
   optional(optional &&) = default;
   optional &operator=(optional &&) = default;
   ~optional() = default;
 };
+
+template <class T, class S>
+bool operator==(const optional<T> &a, const optional<S> &b) {
+  if (a) {
+    return static_cast<bool>(b) && a.value() == b.value();
+  }
+  return !static_cast<bool>(b);
+}
+
+template <class T>
+bool operator==(const T &a, const optional<T> &b) {
+  return static_cast<bool>(b) && a == b.value();
+}
+
+template <class T>
+bool operator==(const optional<T> &a, const T &b) {
+  return static_cast<bool>(a) && a.value() == b;
+}
+
+template <class T>
+StringBuilder &operator<<(StringBuilder &sb, const optional<T> &v) {
+  if (v) {
+    return sb << "Some{" << v.value() << "}";
+  }
+  return sb << "None";
+}
 
 }  // namespace td

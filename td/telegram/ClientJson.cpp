@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -10,6 +10,7 @@
 #include "td/telegram/td_api_json.h"
 
 #include "td/utils/common.h"
+#include "td/utils/FlatHashMap.h"
 #include "td/utils/JsonBuilder.h"
 #include "td/utils/port/thread_local.h"
 #include "td/utils/SliceBuilder.h"
@@ -39,16 +40,14 @@ static std::pair<td_api::object_ptr<td_api::Function>, string> to_request(Slice 
   }
 
   string extra;
-  if (has_json_object_field(json_value.get_object(), "@extra")) {
-    extra = json_encode<string>(
-        get_json_object_field(json_value.get_object(), "@extra", JsonValue::Type::Null).move_as_ok());
+  if (json_value.get_object().has_field("@extra")) {
+    extra = json_encode<string>(json_value.get_object().extract_field("@extra"));
   }
 
   td_api::object_ptr<td_api::Function> func;
   auto status = from_json(func, std::move(json_value));
   if (status.is_error()) {
-    return {get_return_error_function(PSLICE()
-                                      << "Failed to parse JSON object as TDLib request: " << status.error().message()),
+    return {get_return_error_function(PSLICE() << "Failed to parse JSON object as TDLib request: " << status.message()),
             std::move(extra)};
   }
   return std::make_pair(std::move(func), std::move(extra));
@@ -119,7 +118,7 @@ static ClientManager *get_manager() {
 }
 
 static std::mutex extra_mutex;
-static std::unordered_map<int64, string> extra;
+static FlatHashMap<int64, string> extra;
 static std::atomic<uint64> extra_id{1};
 
 int json_create_client_id() {

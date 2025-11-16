@@ -1,12 +1,15 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
+#ifdef TD_JSON_JAVA
+#include <td/telegram/td_json_client.h>
+#else
 #include <td/telegram/Client.h>
-#include <td/telegram/Log.h>
 #include <td/telegram/td_api.h>
+#endif
 
 #include <td/tl/tl_jni_object.h>
 
@@ -17,6 +20,31 @@
 
 namespace td_jni {
 
+#ifdef TD_JSON_JAVA
+static jint JsonClient_createClientId(JNIEnv *env, jclass clazz) {
+  return static_cast<jint>(td_create_client_id());
+}
+
+static void JsonClient_send(JNIEnv *env, jclass clazz, jint client_id, jstring request) {
+  td_send(static_cast<int>(client_id), td::jni::from_jstring(env, request).c_str());
+}
+
+static jstring JsonClient_receive(JNIEnv *env, jclass clazz, jdouble timeout) {
+  auto result = td_receive(timeout);
+  if (result == nullptr) {
+    return nullptr;
+  }
+  return td::jni::to_jstring(env, result);
+}
+
+static jstring JsonClient_execute(JNIEnv *env, jclass clazz, jstring request) {
+  auto result = td_execute(td::jni::from_jstring(env, request).c_str());
+  if (result == nullptr) {
+    return nullptr;
+  }
+  return td::jni::to_jstring(env, result);
+}
+#else
 static td::td_api::object_ptr<td::td_api::Function> fetch_function(JNIEnv *env, jobject function) {
   td::jni::reset_parse_error();
   auto result = td::td_api::Function::fetch(env, function);
@@ -77,18 +105,6 @@ static jobject Client_nativeClientExecute(JNIEnv *env, jclass clazz, jobject fun
   return result;
 }
 
-static void Log_setVerbosityLevel(JNIEnv *env, jclass clazz, jint new_log_verbosity_level) {
-  td::Log::set_verbosity_level(static_cast<int>(new_log_verbosity_level));
-}
-
-static jboolean Log_setFilePath(JNIEnv *env, jclass clazz, jstring file_path) {
-  return td::Log::set_file_path(td::jni::from_jstring(env, file_path)) ? JNI_TRUE : JNI_FALSE;
-}
-
-static void Log_setMaxFileSize(JNIEnv *env, jclass clazz, jlong max_file_size) {
-  td::Log::set_max_file_size(max_file_size);
-}
-
 static jstring Object_toString(JNIEnv *env, jobject object) {
   return td::jni::to_jstring(env, to_string(td::td_api::Object::fetch(env, object)));
 }
@@ -96,26 +112,64 @@ static jstring Object_toString(JNIEnv *env, jobject object) {
 static jstring Function_toString(JNIEnv *env, jobject object) {
   return td::jni::to_jstring(env, to_string(td::td_api::Function::fetch(env, object)));
 }
+#endif
 
 static constexpr jint JAVA_VERSION = JNI_VERSION_1_6;
 static JavaVM *java_vm;
-static jclass log_class;
+static jobject log_message_handler;
 
-static void on_log_message(int verbosity_level, const char *error_message) {
-  if (verbosity_level != 0) {
-    return;
-  }
+static void on_log_message(int verbosity_level, const char *log_message) {
   auto env = td::jni::get_jni_env(java_vm, JAVA_VERSION);
   if (env == nullptr) {
     return;
   }
-  jmethodID on_fatal_error_method = env->GetStaticMethodID(log_class, "onFatalError", "(Ljava/lang/String;)V");
-  if (on_fatal_error_method) {
-    jstring error_str = td::jni::to_jstring(env.get(), error_message);
-    env->CallStaticVoidMethod(log_class, on_fatal_error_method, error_str);
-    if (error_str) {
-      env->DeleteLocalRef(error_str);
+
+  jobject handler = env->NewLocalRef(log_message_handler);
+  if (!handler) {
+    return;
+  }
+
+  jclass handler_class = env->GetObjectClass(handler);
+  if (handler_class) {
+    jmethodID on_log_message_method = env->GetMethodID(handler_class, "onLogMessage", "(ILjava/lang/String;)V");
+    if (on_log_message_method) {
+      jstring log_message_str = td::jni::to_jstring(env.get(), log_message);
+      if (log_message_str) {
+        env->CallVoidMethod(handler, on_log_message_method, static_cast<jint>(verbosity_level), log_message_str);
+        env->DeleteLocalRef((jobject)log_message_str);
+      }
     }
+    env->DeleteLocalRef((jobject)handler_class);
+  }
+
+  env->DeleteLocalRef(handler);
+}
+
+static void Client_nativeClientSetLogMessageHandler(JNIEnv *env, jclass clazz, jint max_verbosity_level,
+                                                    jobject new_log_message_handler) {
+  if (log_message_handler) {
+#ifdef TD_JSON_JAVA
+    td_set_log_message_callback(0, nullptr);
+#else
+    td::ClientManager::set_log_message_callback(0, nullptr);
+#endif
+    jobject old_log_message_handler = log_message_handler;
+    log_message_handler = jobject();
+    env->DeleteGlobalRef(old_log_message_handler);
+  }
+
+  if (new_log_message_handler) {
+    log_message_handler = env->NewGlobalRef(new_log_message_handler);
+    if (!log_message_handler) {
+      // out of memory
+      return;
+    }
+
+#ifdef TD_JSON_JAVA
+    td_set_log_message_callback(static_cast<int>(max_verbosity_level), on_log_message);
+#else
+    td::ClientManager::set_log_message_callback(static_cast<int>(max_verbosity_level), on_log_message);
+#endif
   }
 }
 
@@ -132,8 +186,28 @@ static jint register_native(JavaVM *vm) {
                                     reinterpret_cast<void *>(function_ptr));
   };
 
+#ifdef TD_JSON_JAVA
+  auto client_class = td::jni::get_jclass(env, PACKAGE_NAME "/JsonClient");
+
+  register_method(client_class, "createClientId", "()I", JsonClient_createClientId);
+  register_method(client_class, "send", "(ILjava/lang/String;)V", JsonClient_send);
+  register_method(client_class, "receive", "(D)Ljava/lang/String;", JsonClient_receive);
+  register_method(client_class, "execute", "(Ljava/lang/String;)Ljava/lang/String;", JsonClient_execute);
+  register_method(client_class, "setLogMessageHandler", "(IL" PACKAGE_NAME "/JsonClient$LogMessageHandler;)V",
+                  Client_nativeClientSetLogMessageHandler);
+#else
+  auto td_api_class = td::jni::get_jclass(env, PACKAGE_NAME "/TdApi");
+  jfieldID commit_hash_field_id =
+      td::jni::get_static_field_id(env, td_api_class, "GIT_COMMIT_HASH", "Ljava/lang/String;");
+  std::string td_api_version = td::jni::fetch_static_string(env, td_api_class, commit_hash_field_id);
+  std::string tdjni_version = td::td_api::get_git_commit_hash();
+  if (tdjni_version != td_api_version) {
+    td::jni::set_fatal_error(env, "Mismatched TdApi.java (" + td_api_version + ") and tdjni shared library (" +
+                                      tdjni_version + ") versions");
+    return JAVA_VERSION;
+  }
+
   auto client_class = td::jni::get_jclass(env, PACKAGE_NAME "/Client");
-  log_class = td::jni::get_jclass(env, PACKAGE_NAME "/Log");
   auto object_class = td::jni::get_jclass(env, PACKAGE_NAME "/TdApi$Object");
   auto function_class = td::jni::get_jclass(env, PACKAGE_NAME "/TdApi$Function");
 
@@ -143,10 +217,8 @@ static jint register_native(JavaVM *vm) {
   register_method(client_class, "nativeClientSend", "(IJ" TD_FUNCTION ")V", Client_nativeClientSend);
   register_method(client_class, "nativeClientReceive", "([I[J[" TD_OBJECT "D)I", Client_nativeClientReceive);
   register_method(client_class, "nativeClientExecute", "(" TD_FUNCTION ")" TD_OBJECT, Client_nativeClientExecute);
-
-  register_method(log_class, "setVerbosityLevel", "(I)V", Log_setVerbosityLevel);
-  register_method(log_class, "setFilePath", "(Ljava/lang/String;)Z", Log_setFilePath);
-  register_method(log_class, "setMaxFileSize", "(J)V", Log_setMaxFileSize);
+  register_method(client_class, "nativeClientSetLogMessageHandler", "(IL" PACKAGE_NAME "/Client$LogMessageHandler;)V",
+                  Client_nativeClientSetLogMessageHandler);
 
   register_method(object_class, "toString", "()Ljava/lang/String;", Object_toString);
 
@@ -155,9 +227,8 @@ static jint register_native(JavaVM *vm) {
 #undef TD_OBJECT
 
   td::jni::init_vars(env, PACKAGE_NAME);
-  td::td_api::Object::init_jni_vars(env, PACKAGE_NAME);
-  td::td_api::Function::init_jni_vars(env, PACKAGE_NAME);
-  td::ClientManager::set_log_message_callback(0, on_log_message);
+  td::td_api::get_package_name_ref() = PACKAGE_NAME;
+#endif
 
   return JAVA_VERSION;
 }

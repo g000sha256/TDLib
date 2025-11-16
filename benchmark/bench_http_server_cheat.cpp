@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -11,6 +11,7 @@
 #include "td/actor/ConcurrentScheduler.h"
 
 #include "td/utils/buffer.h"
+#include "td/utils/common.h"
 #include "td/utils/logging.h"
 #include "td/utils/port/detail/PollableFd.h"
 #include "td/utils/port/SocketFd.h"
@@ -121,8 +122,7 @@ class Server final : public td::TcpListener::Callback {
 
 int main() {
   SET_VERBOSITY_LEVEL(VERBOSITY_NAME(ERROR));
-  auto scheduler = td::make_unique<td::ConcurrentScheduler>();
-  scheduler->init(N);
+  auto scheduler = td::make_unique<td::ConcurrentScheduler>(N, 0);
   scheduler->create_actor_unsafe<Server>(0, "Server").release();
   scheduler->start();
   while (scheduler->run_main(10)) {

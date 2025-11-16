@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -15,6 +15,7 @@
 #include "td/net/DarwinHttp.h"
 #endif
 
+#include "td/utils/FlatHashMap.h"
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
@@ -26,11 +27,14 @@
 #include "td/utils/StorerBase.h"
 
 #include <memory>
-#include <unordered_map>
 #include <utility>
 
 namespace td {
 namespace mtproto {
+
+RawConnection::~RawConnection() {
+  LOG(DEBUG) << "Destroy raw connection " << this;
+}
 
 class RawConnectionDefault final : public RawConnection {
  public:
@@ -39,6 +43,7 @@ class RawConnectionDefault final : public RawConnection {
       : socket_fd_(std::move(buffered_socket_fd))
       , transport_(create_transport(std::move(transport_type)))
       , stats_callback_(std::move(stats_callback)) {
+    LOG(DEBUG) << "Create raw connection " << this;
     transport_->init(&socket_fd_.input_buffer(), &socket_fd_.output_buffer());
   }
 
@@ -49,45 +54,46 @@ class RawConnectionDefault final : public RawConnection {
   bool can_send() const final {
     return transport_->can_write();
   }
+
   TransportType get_transport_type() const final {
     return transport_->get_type();
   }
-  void send_crypto(const Storer &storer, int64 session_id, int64 salt, const AuthKey &auth_key,
-                   uint64 quick_ack_token) final {
-    PacketInfo info;
-    info.version = 2;
-    info.no_crypto_flag = false;
-    info.salt = salt;
-    info.session_id = session_id;
-    info.use_random_padding = transport_->use_random_padding();
 
-    auto packet = BufferWriter{Transport::write(storer, auth_key, &info), transport_->max_prepend_size(),
-                               transport_->max_append_size()};
-    Transport::write(storer, auth_key, &info, packet.as_slice());
+  size_t send_crypto(const Storer &storer, uint64 session_id, int64 salt, const AuthKey &auth_key,
+                     uint64 quick_ack_token) final {
+    PacketInfo packet_info;
+    packet_info.version = 2;
+    packet_info.no_crypto_flag = false;
+    packet_info.salt = salt;
+    packet_info.session_id = session_id;
+    packet_info.use_random_padding = transport_->use_random_padding();
+    auto packet =
+        Transport::write(storer, auth_key, &packet_info, transport_->max_prepend_size(), transport_->max_append_size());
 
     bool use_quick_ack = false;
     if (quick_ack_token != 0 && transport_->support_quick_ack()) {
-      auto tmp = quick_ack_to_token_.emplace(info.message_ack, quick_ack_token);
+      CHECK(packet_info.message_ack & (1u << 31));
+      auto tmp = quick_ack_to_token_.emplace(packet_info.message_ack, quick_ack_token);
       if (tmp.second) {
         use_quick_ack = true;
       } else {
-        LOG(ERROR) << "Quick ack " << info.message_ack << " collision";
+        LOG(ERROR) << "Quick ack " << packet_info.message_ack << " collision";
       }
     }
 
+    auto packet_size = packet.size();
     transport_->write(std::move(packet), use_quick_ack);
+    return packet_size;
   }
 
-  uint64 send_no_crypto(const Storer &storer) final {
-    PacketInfo info;
+  void send_no_crypto(const Storer &storer) final {
+    PacketInfo packet_info;
+    packet_info.no_crypto_flag = true;
+    auto packet = Transport::write(storer, AuthKey(), &packet_info, transport_->max_prepend_size(),
+                                   transport_->max_append_size());
 
-    info.no_crypto_flag = true;
-    auto packet = BufferWriter{Transport::write(storer, AuthKey(), &info), transport_->max_prepend_size(),
-                               transport_->max_append_size()};
-    Transport::write(storer, AuthKey(), &info, packet.as_slice());
     LOG(INFO) << "Send handshake packet: " << format::as_hex_dump<4>(packet.as_slice());
     transport_->write(std::move(packet), false);
-    return info.message_id;
   }
 
   PollableFdInfo &get_poll_info() final {
@@ -115,6 +121,7 @@ class RawConnectionDefault final : public RawConnection {
   }
 
   void close() final {
+    LOG(DEBUG) << "Close raw connection " << this;
     transport_.reset();
     socket_fd_.close();
   }
@@ -130,32 +137,33 @@ class RawConnectionDefault final : public RawConnection {
   PublicFields extra_;
   BufferedFd<SocketFd> socket_fd_;
   unique_ptr<IStreamTransport> transport_;
-  std::unordered_map<uint32, uint64> quick_ack_to_token_;
+  FlatHashMap<uint32, uint64> quick_ack_to_token_;
   bool has_error_{false};
 
   unique_ptr<StatsCallback> stats_callback_;
 
   ConnectionManager::ConnectionToken connection_token_;
 
+  void on_read(size_t size, Callback &callback) {
+    if (size <= 0) {
+      return;
+    }
+
+    if (stats_callback_) {
+      stats_callback_->on_read(size);
+    }
+    callback.on_read(size);
+  }
+
   Status flush_read(const AuthKey &auth_key, Callback &callback) {
     auto r = socket_fd_.flush_read();
     if (r.is_ok()) {
-      if (stats_callback_) {
-        stats_callback_->on_read(r.ok());
-      }
-      callback.on_read(r.ok());
+      on_read(r.ok(), callback);
     }
     while (transport_->can_read()) {
       BufferSlice packet;
       uint32 quick_ack = 0;
       TRY_RESULT(wait_size, transport_->read_next(&packet, &quick_ack));
-      if (!is_aligned_pointer<4>(packet.as_slice().ubegin())) {
-        BufferSlice new_packet(packet.size());
-        new_packet.as_slice().copy_from(packet.as_slice());
-        packet = std::move(new_packet);
-      }
-      LOG_CHECK(is_aligned_pointer<4>(packet.as_slice().ubegin()))
-          << packet.as_slice().ubegin() << ' ' << packet.size() << ' ' << wait_size;
       if (wait_size != 0) {
         constexpr size_t MAX_PACKET_SIZE = (1 << 22) + 1024;
         if (wait_size > MAX_PACKET_SIZE) {
@@ -163,26 +171,33 @@ class RawConnectionDefault final : public RawConnection {
         }
         break;
       }
-
       if (quick_ack != 0) {
         TRY_STATUS(on_quick_ack(quick_ack, callback));
         continue;
       }
 
-      PacketInfo info;
-      info.version = 2;
+      auto old_pointer = packet.as_slice().ubegin();
+      if (!is_aligned_pointer<4>(old_pointer)) {
+        BufferSlice new_packet(packet.size());
+        new_packet.as_mutable_slice().copy_from(packet.as_slice());
+        packet = std::move(new_packet);
+      }
+      LOG_CHECK(is_aligned_pointer<4>(packet.as_slice().ubegin()))
+          << old_pointer << ' ' << packet.as_slice().ubegin() << ' ' << BufferSlice(0).as_slice().ubegin() << ' '
+          << packet.size() << ' ' << wait_size << ' ' << quick_ack;
 
-      TRY_RESULT(read_result, Transport::read(packet.as_slice(), auth_key, &info));
+      PacketInfo packet_info;
+      packet_info.version = 2;
+
+      TRY_RESULT(read_result, Transport::read(packet.as_mutable_slice(), auth_key, &packet_info));
       switch (read_result.type()) {
-        case Transport::ReadResult::Quickack: {
+        case Transport::ReadResult::Quickack:
           TRY_STATUS(on_quick_ack(read_result.quick_ack(), callback));
           break;
-        }
-        case Transport::ReadResult::Error: {
+        case Transport::ReadResult::Error:
           TRY_STATUS(on_read_mtproto_error(read_result.error()));
           break;
-        }
-        case Transport::ReadResult::Packet: {
+        case Transport::ReadResult::Packet:
           // If a packet was successfully decrypted, then it is ok to assume that the connection is alive
           if (!auth_key.empty()) {
             if (stats_callback_) {
@@ -190,9 +205,8 @@ class RawConnectionDefault final : public RawConnection {
             }
           }
 
-          TRY_STATUS(callback.on_raw_packet(info, packet.from_slice(read_result.packet())));
+          TRY_STATUS(callback.on_raw_packet(packet_info, packet.from_slice(read_result.packet())));
           break;
-        }
         case Transport::ReadResult::Nop:
           break;
         default:
@@ -218,11 +232,15 @@ class RawConnectionDefault final : public RawConnection {
   }
 
   Status on_quick_ack(uint32 quick_ack, Callback &callback) {
+    if ((quick_ack & (1u << 31)) == 0) {
+      LOG(ERROR) << "Receive invalid quick_ack " << quick_ack;
+      return Status::OK();
+    }
+
     auto it = quick_ack_to_token_.find(quick_ack);
     if (it == quick_ack_to_token_.end()) {
-      LOG(WARNING) << Status::Error(PSLICE() << "Unknown quick_ack " << quick_ack);
+      LOG(WARNING) << "Receive unknown quick_ack " << quick_ack;
       return Status::OK();
-      // TODO: return Status::Error(PSLICE() << "Unknown quick_ack " << quick_ack);
     }
     auto token = it->second;
     quick_ack_to_token_.erase(it);
@@ -245,7 +263,7 @@ class RawConnectionDefault final : public RawConnection {
     sync_with_poll(socket_fd_);
 
     // read/write
-    // EINVAL may be returned in linux kernel < 2.6.28. And on some new kernels too.
+    // EINVAL can be returned in Linux kernel < 2.6.28. And on some new kernels too.
     // just close connection and hope that read or write will not return this error too.
     TRY_STATUS(socket_fd_.get_pending_error());
 
@@ -264,6 +282,7 @@ class RawConnectionHttp final : public RawConnection {
  public:
   RawConnectionHttp(IPAddress ip_address, unique_ptr<StatsCallback> stats_callback)
       : ip_address_(std::move(ip_address)), stats_callback_(std::move(stats_callback)) {
+    LOG(DEBUG) << "Create raw connection " << this;
     answers_ = std::make_shared<MpscPollableQueue<Result<BufferSlice>>>();
     answers_->init();
   }
@@ -275,33 +294,33 @@ class RawConnectionHttp final : public RawConnection {
   bool can_send() const final {
     return mode_ == Send;
   }
+
   TransportType get_transport_type() const final {
     return mtproto::TransportType{mtproto::TransportType::Http, 0, mtproto::ProxySecret()};
   }
-  void send_crypto(const Storer &storer, int64 session_id, int64 salt, const AuthKey &auth_key,
-                   uint64 quick_ack_token) final {
-    PacketInfo info;
-    info.version = 2;
-    info.no_crypto_flag = false;
-    info.salt = salt;
-    info.session_id = session_id;
-    info.use_random_padding = false;
 
-    auto packet = BufferWriter{Transport::write(storer, auth_key, &info), 0, 0};
-    Transport::write(storer, auth_key, &info, packet.as_slice());
+  size_t send_crypto(const Storer &storer, uint64 session_id, int64 salt, const AuthKey &auth_key,
+                     uint64 quick_ack_token) final {
+    PacketInfo packet_info;
+    packet_info.version = 2;
+    packet_info.no_crypto_flag = false;
+    packet_info.salt = salt;
+    packet_info.session_id = session_id;
+    packet_info.use_random_padding = false;
+    auto packet = Transport::write(storer, auth_key, &packet_info);
 
+    auto packet_size = packet.size();
     send_packet(packet.as_buffer_slice());
+    return packet_size;
   }
 
-  uint64 send_no_crypto(const Storer &storer) final {
-    PacketInfo info;
+  void send_no_crypto(const Storer &storer) final {
+    PacketInfo packet_info;
+    packet_info.no_crypto_flag = true;
+    auto packet = Transport::write(storer, AuthKey(), &packet_info);
 
-    info.no_crypto_flag = true;
-    auto packet = BufferWriter{Transport::write(storer, AuthKey(), &info), 0, 0};
-    Transport::write(storer, AuthKey(), &info, packet.as_slice());
     LOG(INFO) << "Send handshake packet: " << format::as_hex_dump<4>(packet.as_slice());
     send_packet(packet.as_buffer_slice());
-    return info.message_id;
   }
 
   PollableFdInfo &get_poll_info() final {
@@ -329,6 +348,7 @@ class RawConnectionHttp final : public RawConnection {
   }
 
   void close() final {
+    LOG(DEBUG) << "Close raw connection " << this;
   }
 
   PublicFields &extra() final {
@@ -352,6 +372,17 @@ class RawConnectionHttp final : public RawConnection {
   std::shared_ptr<MpscPollableQueue<Result<BufferSlice>>> answers_;
   std::vector<BufferSlice> to_send_;
 
+  void on_read(size_t size, Callback &callback) {
+    if (size <= 0) {
+      return;
+    }
+
+    if (stats_callback_) {
+      stats_callback_->on_read(size);
+    }
+    callback.on_read(size);
+  }
+
   void send_packet(BufferSlice packet) {
     CHECK(mode_ == Send);
     mode_ = Receive;
@@ -366,17 +397,14 @@ class RawConnectionHttp final : public RawConnection {
       }
       for (int i = 0; i < packets_n; i++) {
         TRY_RESULT(packet, answers_->reader_get_unsafe());
-        if (stats_callback_) {
-          stats_callback_->on_read(packet.size());
-        }
-        callback.on_read(packet.size());
+        on_read(packet.size(), callback);
         CHECK(mode_ == Receive);
         mode_ = Send;
 
-        PacketInfo info;
-        info.version = 2;
+        PacketInfo packet_info;
+        packet_info.version = 2;
 
-        TRY_RESULT(read_result, Transport::read(packet.as_slice(), auth_key, &info));
+        TRY_RESULT(read_result, Transport::read(packet.as_mutable_slice(), auth_key, &packet_info));
         switch (read_result.type()) {
           case Transport::ReadResult::Quickack: {
             break;
@@ -393,7 +421,7 @@ class RawConnectionHttp final : public RawConnection {
               }
             }
 
-            TRY_STATUS(callback.on_raw_packet(info, packet.from_slice(read_result.packet())));
+            TRY_STATUS(callback.on_raw_packet(packet_info, packet.from_slice(read_result.packet())));
             break;
           }
           case Transport::ReadResult::Nop:
@@ -432,8 +460,8 @@ class RawConnectionHttp final : public RawConnection {
   }
 
   Status do_send(Slice data) {
-    DarwinHttp::post(PSLICE() << "http://" << ip_address_.get_ip_str() << ":" << ip_address_.get_port() << "/api", data,
-                     [answers = answers_](auto res) { answers->writer_put(std::move(res)); });
+    DarwinHttp::post(PSLICE() << "http://" << ip_address_.get_ip_host() << ":" << ip_address_.get_port() << "/api",
+                     data, [answers = answers_](auto res) { answers->writer_put(std::move(res)); });
     return Status::OK();
   }
 

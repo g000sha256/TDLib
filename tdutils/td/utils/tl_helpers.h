@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -7,18 +7,19 @@
 #pragma once
 
 #include "td/utils/common.h"
+#include "td/utils/FlatHashSet.h"
 #include "td/utils/misc.h"
 #include "td/utils/SharedSlice.h"
 #include "td/utils/Slice.h"
 #include "td/utils/SliceBuilder.h"
-#include "td/utils/StackAllocator.h"
 #include "td/utils/Status.h"
 #include "td/utils/tl_parsers.h"
 #include "td/utils/tl_storers.h"
+#include "td/utils/UInt.h"
+#include "td/utils/unique_value_ptr.h"
 #include "td/utils/Variant.h"
 
 #include <type_traits>
-#include <unordered_set>
 #include <utility>
 
 #define BEGIN_STORE_FLAGS()       \
@@ -26,8 +27,9 @@
     ::td::uint32 flags_store = 0; \
   ::td::uint32 bit_offset_store = 0
 
-#define STORE_FLAG(flag)                     \
-  flags_store |= (flag) << bit_offset_store; \
+#define STORE_FLAG(flag)                                                         \
+  static_assert(std::is_same<decltype(flag), bool>::value, "flag must be bool"); \
+  flags_store |= (flag) << bit_offset_store;                                     \
   bit_offset_store++
 
 #define END_STORE_FLAGS()           \
@@ -42,8 +44,9 @@
     ::td::uint32 bit_offset_parse = 0; \
   ::td::parse(flags_parse, parser)
 
-#define PARSE_FLAG(flag)                               \
-  flag = ((flags_parse >> bit_offset_parse) & 1) != 0; \
+#define PARSE_FLAG(flag)                                                         \
+  static_assert(std::is_same<decltype(flag), bool>::value, "flag must be bool"); \
+  flag = ((flags_parse >> bit_offset_parse) & 1) != 0;                           \
   bit_offset_parse++
 
 #define END_PARSE_FLAGS()                                                                                           \
@@ -98,6 +101,24 @@ void store(uint64 x, StorerT &storer) {
 template <class ParserT>
 void parse(uint64 &x, ParserT &parser) {
   x = static_cast<uint64>(parser.fetch_long());
+}
+
+template <class StorerT>
+void store(UInt256 x, StorerT &storer) {
+  storer.store_binary(x);
+}
+template <class ParserT>
+void parse(UInt256 &x, ParserT &parser) {
+  x = parser.template fetch_binary<UInt256>();
+}
+
+template <class StorerT>
+void store(UInt512 x, StorerT &storer) {
+  storer.store_binary(x);
+}
+template <class ParserT>
+void parse(UInt512 &x, ParserT &parser) {
+  x = parser.template fetch_binary<UInt512>();
 }
 
 template <class StorerT>
@@ -170,15 +191,27 @@ void parse(unique_ptr<T> &ptr, ParserT &parser) {
   parse(*ptr, parser);
 }
 
-template <class Key, class Hash, class KeyEqual, class Allocator, class StorerT>
-void store(const std::unordered_set<Key, Hash, KeyEqual, Allocator> &s, StorerT &storer) {
+template <class T, class StorerT>
+void store(const unique_value_ptr<T> &ptr, StorerT &storer) {
+  CHECK(ptr != nullptr);
+  store(*ptr, storer);
+}
+template <class T, class ParserT>
+void parse(unique_value_ptr<T> &ptr, ParserT &parser) {
+  CHECK(ptr == nullptr);
+  ptr = make_unique_value<T>();
+  parse(*ptr, parser);
+}
+
+template <class Key, class Hash, class KeyEqual, class StorerT>
+void store(const FlatHashSet<Key, Hash, KeyEqual> &s, StorerT &storer) {
   storer.store_binary(narrow_cast<int32>(s.size()));
   for (auto &val : s) {
     store(val, storer);
   }
 }
-template <class Key, class Hash, class KeyEqual, class Allocator, class ParserT>
-void parse(std::unordered_set<Key, Hash, KeyEqual, Allocator> &s, ParserT &parser) {
+template <class Key, class Hash, class KeyEqual, class ParserT>
+void parse(FlatHashSet<Key, Hash, KeyEqual> &s, ParserT &parser) {
   uint32 size = parser.fetch_int();
   if (parser.get_left_len() < size) {
     parser.set_error("Wrong set length");
@@ -253,19 +286,10 @@ string serialize(const T &object) {
   size_t length = calc_length.get_length();
 
   string key(length, '\0');
-  if (!is_aligned_pointer<4>(key.data())) {
-    auto ptr = StackAllocator::alloc(length);
-    MutableSlice data = ptr.as_slice();
-    TlStorerUnsafe storer(data.ubegin());
-    store(object, storer);
-    CHECK(storer.get_buf() == data.uend());
-    key.assign(data.begin(), data.size());
-  } else {
-    MutableSlice data = key;
-    TlStorerUnsafe storer(data.ubegin());
-    store(object, storer);
-    CHECK(storer.get_buf() == data.uend());
-  }
+  MutableSlice data = key;
+  TlStorerUnsafe storer(data.ubegin());
+  store(object, storer);
+  CHECK(storer.get_buf() == data.uend());
   return key;
 }
 
@@ -276,7 +300,6 @@ SecureString serialize_secure(const T &object) {
   size_t length = calc_length.get_length();
 
   SecureString key(length, '\0');
-  CHECK(is_aligned_pointer<4>(key.data()));
   MutableSlice data = key.as_mutable_slice();
   TlStorerUnsafe storer(data.ubegin());
   store(object, storer);

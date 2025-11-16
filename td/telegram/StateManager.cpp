@@ -1,15 +1,16 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #include "td/telegram/StateManager.h"
 
+#include "td/telegram/Global.h"
+
 #include "td/actor/PromiseFuture.h"
 #include "td/actor/SleepActor.h"
 
-#include "td/utils/algorithm.h"
 #include "td/utils/logging.h"
 #include "td/utils/Time.h"
 
@@ -22,11 +23,7 @@ void StateManager::on_synchronized(bool is_synchronized) {
   }
   if (sync_flag_ && !was_sync_) {
     was_sync_ = true;
-    auto promises = std::move(wait_first_sync_);
-    reset_to_empty(wait_first_sync_);
-    for (auto &promise : promises) {
-      promise.set_value(Unit());
-    }
+    set_promises(wait_first_sync_);
   }
 }
 
@@ -73,6 +70,7 @@ void StateManager::add_callback(unique_ptr<Callback> callback) {
     callbacks_.push_back(std::move(callback));
   }
 }
+
 void StateManager::wait_first_sync(Promise<> promise) {
   if (was_sync_) {
     return promise.set_value(Unit());
@@ -133,8 +131,10 @@ void StateManager::on_network_soft() {
 }
 
 void StateManager::start_up() {
-  create_actor<SleepActor>("SleepActor", 1, PromiseCreator::event(self_closure(this, &StateManager::on_network_soft)))
-      .release();
+  if (!G()->get_option_boolean("disable_network_statistics")) {
+    create_actor<SleepActor>("SleepActor", 1, create_event_promise(self_closure(this, &StateManager::on_network_soft)))
+        .release();
+  }
   loop();
 }
 

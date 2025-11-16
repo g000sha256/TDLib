@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -27,9 +27,6 @@ std::atomic<size_t> BufferAllocator::buffer_mem;
 
 int64 BufferAllocator::get_buffer_slice_size() {
   return 0;
-}
-
-void BufferAllocator::track_buffer_slice(int64 size) {
 }
 
 size_t BufferAllocator::get_buffer_mem() {

@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -55,12 +55,12 @@ void SqliteKeyValue::set(Slice key, Slice value) {
   set_stmt_.bind_blob(2, value).ensure();
   auto status = set_stmt_.step();
   if (status.is_error()) {
-    LOG(FATAL) << "Failed to set \"" << base64_encode(key) << "\": " << status.error();
+    LOG(FATAL) << "Failed to set \"" << base64_encode(key) << "\": " << status;
   }
   set_stmt_.reset();
 }
 
-void SqliteKeyValue::set_all(const std::unordered_map<string, string> &key_values) {
+void SqliteKeyValue::set_all(const FlatHashMap<string, string> &key_values) {
   begin_write_transaction().ensure();
   for (auto &key_value : key_values) {
     set(key_value.first, key_value.second);
@@ -75,7 +75,7 @@ string SqliteKeyValue::get(Slice key) {
   get_stmt_.bind_blob(1, key).ensure();
   get_stmt_.step().ensure();
   if (!get_stmt_.has_row()) {
-    return "";
+    return string();
   }
   auto data = get_stmt_.view_blob(0).str();
   get_stmt_.step().ignore();
@@ -86,6 +86,12 @@ void SqliteKeyValue::erase(Slice key) {
   erase_stmt_.bind_blob(1, key).ensure();
   erase_stmt_.step().ensure();
   erase_stmt_.reset();
+}
+
+void SqliteKeyValue::erase_batch(vector<string> keys) {
+  for (auto &key : keys) {
+    erase(key);
+  }
 }
 
 void SqliteKeyValue::erase_by_prefix(Slice prefix) {

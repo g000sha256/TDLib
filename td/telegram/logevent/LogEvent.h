@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -13,7 +13,6 @@
 #include "td/utils/common.h"
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
-#include "td/utils/misc.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
 #include "td/utils/StorerBase.h"
@@ -100,9 +99,30 @@ class LogEvent {
     UnpinAllDialogMessagesOnServer = 0x121,
     DeleteAllCallMessagesOnServer = 0x122,
     DeleteDialogMessagesByDateOnServer = 0x123,
+    ReadAllDialogReactionsOnServer = 0x124,
+    DeleteTopicHistoryOnServer = 0x125,
+    ToggleDialogIsTranslatableOnServer = 0x126,
+    ToggleDialogViewAsMessagesOnServer = 0x127,
+    SendQuickReplyShortcutMessages = 0x128,
+    UpdateReactionNotificationSettingsOnServer = 0x129,
     GetChannelDifference = 0x140,
     AddMessagePushNotification = 0x200,
     EditMessagePushNotification = 0x201,
+    SaveAppLog = 0x300,
+    DeleteStoryOnServer = 0x400,
+    ReadStoriesOnServer = 0x401,
+    LoadDialogExpiringStories = 0x402,
+    SendStory = 0x403,
+    EditStory = 0x404,
+    ChangeAuthorizationSettingsOnServer = 0x500,
+    ResetAuthorizationOnServer = 0x501,
+    ResetAuthorizationsOnServer = 0x502,
+    SetDefaultHistoryTtlOnServer = 0x503,
+    SetAccountTtlOnServer = 0x504,
+    SetAuthorizationTtlOnServer = 0x505,
+    ResetWebAuthorizationOnServer = 0x506,
+    ResetWebAuthorizationsOnServer = 0x507,
+    InvalidateSignInCodesOnServer = 0x508,
     ConfigPmcMagic = 0x1f18,
     BinlogPmcMagic = 0x4327
   };
@@ -196,24 +216,32 @@ Status log_event_parse(T &data, Slice slice) {
   return parser.get_status();
 }
 
+inline int32 log_event_get_version(Slice slice) {
+  LogEventParser parser(slice);
+  return parser.version();
+}
+
 template <class T>
-BufferSlice log_event_store(const T &data) {
+BufferSlice log_event_store_impl(const T &data, const char *file, int line) {
   LogEventStorerCalcLength storer_calc_length;
   store(data, storer_calc_length);
 
   BufferSlice value_buffer{storer_calc_length.get_length()};
-  auto ptr = value_buffer.as_slice().ubegin();
-  LOG_CHECK(is_aligned_pointer<4>(ptr)) << ptr;
-
+  auto ptr = value_buffer.as_mutable_slice().ubegin();
   LogEventStorerUnsafe storer_unsafe(ptr);
   store(data, storer_unsafe);
 
 #ifdef TD_DEBUG
   T check_result;
-  log_event_parse(check_result, value_buffer.as_slice()).ensure();
+  auto status = log_event_parse(check_result, value_buffer.as_slice());
+  if (status.is_error()) {
+    LOG(FATAL) << status << ' ' << file << ' ' << line;
+  }
 #endif
   return value_buffer;
 }
+
+#define log_event_store(data) log_event_store_impl((data), __FILE__, __LINE__)
 
 template <class T>
 log_event::LogEventStorerImpl<T> get_log_event_storer(const T &event) {

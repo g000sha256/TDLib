@@ -1,16 +1,18 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #include "td/utils/HttpUrl.h"
 
+#include "td/utils/algorithm.h"
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
 #include "td/utils/Parser.h"
 #include "td/utils/port/IPAddress.h"
+#include "td/utils/SliceBuilder.h"
 
 #include <algorithm>
 
@@ -138,42 +140,50 @@ Result<HttpUrl> parse_url(Slice url, HttpUrl::Protocol default_protocol) {
     }
   }
 
+  auto check_url_part = [](Slice part, Slice name, bool allow_colon) {
+    for (size_t i = 0; i < part.size(); i++) {
+      char c = part[i];
+      if (is_alnum(c) || c == '.' || c == '-' || c == '_' || c == '!' || c == '$' || c == ',' || c == '~' || c == '*' ||
+          c == '\'' || c == '(' || c == ')' || c == ';' || c == '&' || c == '+' || c == '=' ||
+          (allow_colon && c == ':')) {
+        // symbols allowed by RFC 7230 and RFC 3986
+        continue;
+      }
+      if (c == '%') {
+        c = part[++i];
+        if (is_hex_digit(c)) {
+          c = part[++i];
+          if (is_hex_digit(c)) {
+            // percent encoded symbol as allowed by RFC 7230 and RFC 3986
+            continue;
+          }
+        }
+        return Status::Error(PSLICE() << "Wrong percent-encoded symbol in URL " << name);
+      }
+
+      // all other symbols aren't allowed
+      auto uc = static_cast<unsigned char>(c);
+      if (uc >= 128) {
+        // but we allow plain UTF-8 symbols
+        continue;
+      }
+      return Status::Error(PSLICE() << "Disallowed character in URL " << name);
+    }
+    return Status::OK();
+  };
+
   string host_str = to_lower(host);
-  for (size_t i = 0; i < host_str.size(); i++) {
-    char c = host_str[i];
-    if (is_ipv6) {
-      if (i == 0 || i + 1 == host_str.size() || c == ':' || ('0' <= c && c <= '9') || ('a' <= c && c <= 'f') ||
-          c == '.') {
+  if (is_ipv6) {
+    for (size_t i = 1; i + 1 < host_str.size(); i++) {
+      char c = host_str[i];
+      if (c == ':' || ('0' <= c && c <= '9') || ('a' <= c && c <= 'f') || c == '.') {
         continue;
       }
       return Status::Error("Wrong IPv6 URL host");
     }
-
-    if (('a' <= c && c <= 'z') || c == '.' || ('0' <= c && c <= '9') || c == '-' || c == '_' || c == '!' || c == '$' ||
-        c == ',' || c == '~' || c == '*' || c == '\'' || c == '(' || c == ')' || c == ';' || c == '&' || c == '+' ||
-        c == '=') {
-      // symbols allowed by RFC 7230 and RFC 3986
-      continue;
-    }
-    if (c == '%') {
-      c = host_str[++i];
-      if (('a' <= c && c <= 'f') || ('0' <= c && c <= '9')) {
-        c = host_str[++i];
-        if (('a' <= c && c <= 'f') || ('0' <= c && c <= '9')) {
-          // percent encoded symbol as allowed by RFC 7230 and RFC 3986
-          continue;
-        }
-      }
-      return Status::Error("Wrong percent-encoded symbol in URL host");
-    }
-
-    // all other symbols aren't allowed
-    auto uc = static_cast<unsigned char>(c);
-    if (uc >= 128) {
-      // but we allow plain UTF-8 symbols
-      continue;
-    }
-    return Status::Error("Wrong URL host");
+  } else {
+    TRY_STATUS(check_url_part(host_str, "host", false));
+    TRY_STATUS(check_url_part(userinfo, "userinfo", true));
   }
 
   return HttpUrl{protocol, userinfo.str(), std::move(host_str), is_ipv6, specified_port, port, std::move(query_str)};
@@ -196,8 +206,9 @@ HttpUrlQuery parse_url_query(Slice query) {
   }
 
   HttpUrlQuery result;
-  result.path_ = full_split(url_decode(query.substr(0, path_size), false), '/');
-  if (!result.path_.empty() && result.path_.back().empty()) {
+  result.path_ = transform(full_split(query.substr(0, path_size), '/'),
+                           [](Slice &&segment) { return url_decode(segment, false); });
+  while (!result.path_.empty() && result.path_.back().empty()) {
     result.path_.pop_back();
   }
 
@@ -220,10 +231,24 @@ HttpUrlQuery parse_url_query(Slice query) {
   return result;
 }
 
+bool HttpUrlQuery::has_arg(Slice key) const {
+  auto it =
+      std::find_if(args_.begin(), args_.end(), [&key](const std::pair<string, string> &s) { return s.first == key; });
+  return it != args_.end();
+}
+
 Slice HttpUrlQuery::get_arg(Slice key) const {
   auto it =
       std::find_if(args_.begin(), args_.end(), [&key](const std::pair<string, string> &s) { return s.first == key; });
   return it == args_.end() ? Slice() : it->second;
+}
+
+string get_url_host(Slice url) {
+  auto r_http_url = parse_url(url);
+  if (r_http_url.is_error()) {
+    return string();
+  }
+  return r_http_url.ok().host_;
 }
 
 string get_url_query_file_name(const string &query) {

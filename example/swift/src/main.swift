@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -107,26 +107,34 @@ func updateAuthorizationState(authorizationState: Dictionary<String, Any>) {
         case "authorizationStateWaitTdlibParameters":
             client.queryAsync(query:[
                 "@type":"setTdlibParameters",
-                "parameters":[
-                    "database_directory":"tdlib",
-                    "use_message_database":true,
-                    "use_secret_chats":true,
-                    "api_id":94575,
-                    "api_hash":"a3406de8d171bb422bb6ddf3bbd800e2",
-                    "system_language_code":"en",
-                    "device_model":"Desktop",
-                    "application_version":"1.0",
-                    "enable_storage_optimizer":true
-                ]
+                "database_directory":"tdlib",
+                "use_message_database":true,
+                "use_secret_chats":true,
+                "api_id":94575,
+                "api_hash":"a3406de8d171bb422bb6ddf3bbd800e2",
+                "system_language_code":"en",
+                "device_model":"Desktop",
+                "application_version":"1.0"
             ]);
-
-        case "authorizationStateWaitEncryptionKey":
-            client.queryAsync(query: ["@type":"checkDatabaseEncryptionKey", "encryption_key":""])
 
         case "authorizationStateWaitPhoneNumber":
             print("Enter your phone number: ")
             let phone_number = myReadLine()
             client.queryAsync(query:["@type":"setAuthenticationPhoneNumber", "phone_number":phone_number], f:checkAuthenticationError)
+
+        case "authorizationStateWaitPremiumPurchase":
+            print("Telegram Premium subscription is required")
+
+        case "authorizationStateWaitEmailAddress":
+            print("Enter your email address: ")
+            let email_address = myReadLine()
+            client.queryAsync(query:["@type":"setAuthenticationEmailAddress", "email_address":email_address], f:checkAuthenticationError)
+
+        case "authorizationStateWaitEmailCode":
+            var code: String = ""
+            print("Enter email code: ")
+            code = myReadLine()
+            client.queryAsync(query:["@type":"checkAuthenticationEmailCode", "code":["@type":"emailAddressAuthenticationCode", "code":code]], f:checkAuthenticationError)
 
         case "authorizationStateWaitCode":
             var code: String = ""

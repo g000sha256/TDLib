@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -9,9 +9,9 @@
 #include "td/telegram/Version.h"
 
 #include "td/utils/common.h"
+#include "td/utils/HashTableUtils.h"
 #include "td/utils/StringBuilder.h"
 
-#include <functional>
 #include <type_traits>
 
 namespace td {
@@ -22,16 +22,18 @@ class ChannelId {
  public:
   // the last (1 << 31) - 1 identifiers will be used for secret chat dialog identifiers
   static constexpr int64 MAX_CHANNEL_ID = 1000000000000ll - (1ll << 31);
+  static constexpr int64 MIN_MONOFORUM_CHANNEL_ID = 1000000000000ll + (1ll << 31) + 1;
+  static constexpr int64 MAX_MONOFORUM_CHANNEL_ID = 3000000000000ll;
 
   ChannelId() = default;
 
-  explicit ChannelId(int64 channel_id) : id(channel_id) {
+  explicit constexpr ChannelId(int64 channel_id) : id(channel_id) {
   }
   template <class T, typename = std::enable_if_t<std::is_convertible<T, int64>::value>>
   ChannelId(T channel_id) = delete;
 
   bool is_valid() const {
-    return 0 < id && id < MAX_CHANNEL_ID;
+    return (0 < id && id < MAX_CHANNEL_ID) || (MIN_MONOFORUM_CHANNEL_ID <= id && id < MAX_MONOFORUM_CHANNEL_ID);
   }
 
   int64 get() const {
@@ -62,8 +64,8 @@ class ChannelId {
 };
 
 struct ChannelIdHash {
-  std::size_t operator()(ChannelId channel_id) const {
-    return std::hash<int64>()(channel_id.get());
+  uint32 operator()(ChannelId channel_id) const {
+    return Hash<int64>()(channel_id.get());
   }
 };
 
