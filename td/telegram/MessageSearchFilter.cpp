@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -33,10 +33,9 @@ tl_object_ptr<telegram_api::MessagesFilter> get_input_messages_filter(MessageSea
     case MessageSearchFilter::ChatPhoto:
       return make_tl_object<telegram_api::inputMessagesFilterChatPhotos>();
     case MessageSearchFilter::Call:
-      return make_tl_object<telegram_api::inputMessagesFilterPhoneCalls>(0, false /*ignored*/);
+      return make_tl_object<telegram_api::inputMessagesFilterPhoneCalls>(0, false);
     case MessageSearchFilter::MissedCall:
-      return make_tl_object<telegram_api::inputMessagesFilterPhoneCalls>(
-          telegram_api::inputMessagesFilterPhoneCalls::MISSED_MASK, false /*ignored*/);
+      return make_tl_object<telegram_api::inputMessagesFilterPhoneCalls>(0, true);
     case MessageSearchFilter::VideoNote:
       return make_tl_object<telegram_api::inputMessagesFilterRoundVideo>();
     case MessageSearchFilter::VoiceAndVideoNote:
@@ -47,6 +46,7 @@ tl_object_ptr<telegram_api::MessagesFilter> get_input_messages_filter(MessageSea
       return make_tl_object<telegram_api::inputMessagesFilterPinned>();
     case MessageSearchFilter::UnreadMention:
     case MessageSearchFilter::FailedToSend:
+    case MessageSearchFilter::UnreadReaction:
     default:
       UNREACHABLE();
       return nullptr;
@@ -90,6 +90,8 @@ MessageSearchFilter get_message_search_filter(const tl_object_ptr<td_api::Search
       return MessageSearchFilter::FailedToSend;
     case td_api::searchMessagesFilterPinned::ID:
       return MessageSearchFilter::Pinned;
+    case td_api::searchMessagesFilterUnreadReaction::ID:
+      return MessageSearchFilter::UnreadReaction;
     default:
       UNREACHABLE();
       return MessageSearchFilter::Empty;
@@ -134,6 +136,8 @@ StringBuilder &operator<<(StringBuilder &string_builder, MessageSearchFilter fil
       return string_builder << "FailedToSend";
     case MessageSearchFilter::Pinned:
       return string_builder << "Pinned";
+    case MessageSearchFilter::UnreadReaction:
+      return string_builder << "UnreadReaction";
     default:
       UNREACHABLE();
       return string_builder;

@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -10,6 +10,7 @@
 #include "td/telegram/ChatId.h"
 #include "td/telegram/UserId.h"
 
+#include "td/utils/algorithm.h"
 #include "td/utils/logging.h"
 
 namespace td {
@@ -54,8 +55,8 @@ InputDialogId::InputDialogId(const tl_object_ptr<telegram_api::InputPeer> &input
 
 vector<InputDialogId> InputDialogId::get_input_dialog_ids(
     const vector<tl_object_ptr<telegram_api::InputPeer>> &input_peers,
-    std::unordered_set<DialogId, DialogIdHash> *added_dialog_ids) {
-  std::unordered_set<DialogId, DialogIdHash> temp_added_dialog_ids;
+    FlatHashSet<DialogId, DialogIdHash> *added_dialog_ids) {
+  FlatHashSet<DialogId, DialogIdHash> temp_added_dialog_ids;
   if (added_dialog_ids == nullptr) {
     added_dialog_ids = &temp_added_dialog_ids;
   }
@@ -68,6 +69,10 @@ vector<InputDialogId> InputDialogId::get_input_dialog_ids(
     }
   }
   return result;
+}
+
+vector<DialogId> InputDialogId::get_dialog_ids(const vector<InputDialogId> &input_dialog_ids) {
+  return transform(input_dialog_ids, [](InputDialogId input_dialog_id) { return input_dialog_id.get_dialog_id(); });
 }
 
 vector<telegram_api::object_ptr<telegram_api::InputDialogPeer>> InputDialogId::get_input_dialog_peers(
@@ -141,6 +146,12 @@ bool InputDialogId::contains(const vector<InputDialogId> &input_dialog_ids, Dial
     }
   }
   return false;
+}
+
+bool InputDialogId::remove(vector<InputDialogId> &input_dialog_ids, DialogId dialog_id) {
+  return td::remove_if(input_dialog_ids, [dialog_id](InputDialogId input_dialog_id) {
+    return input_dialog_id.get_dialog_id() == dialog_id;
+  });
 }
 
 }  // namespace td

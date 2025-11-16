@@ -1,26 +1,35 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #include "td/telegram/WebPageBlock.h"
 
+#include "td/telegram/AccentColorId.h"
 #include "td/telegram/AnimationsManager.h"
 #include "td/telegram/AnimationsManager.hpp"
 #include "td/telegram/AudiosManager.h"
 #include "td/telegram/AudiosManager.hpp"
 #include "td/telegram/ChannelId.h"
-#include "td/telegram/ContactsManager.h"
+#include "td/telegram/ChatManager.h"
 #include "td/telegram/DialogId.h"
+#include "td/telegram/DialogPhoto.h"
+#include "td/telegram/DialogPhoto.hpp"
+#include "td/telegram/Dimensions.h"
 #include "td/telegram/Document.h"
 #include "td/telegram/DocumentsManager.h"
 #include "td/telegram/DocumentsManager.hpp"
 #include "td/telegram/files/FileId.h"
+#include "td/telegram/LinkManager.h"
 #include "td/telegram/Location.h"
+#include "td/telegram/PeerColor.h"
 #include "td/telegram/Photo.h"
 #include "td/telegram/Photo.hpp"
+#include "td/telegram/PhotoFormat.h"
 #include "td/telegram/Td.h"
+#include "td/telegram/telegram_api.h"
+#include "td/telegram/ThemeManager.h"
 #include "td/telegram/Version.h"
 #include "td/telegram/VideosManager.h"
 #include "td/telegram/VideosManager.hpp"
@@ -30,12 +39,14 @@
 
 #include "td/utils/algorithm.h"
 #include "td/utils/common.h"
+#include "td/utils/HttpUrl.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
 #include "td/utils/SliceBuilder.h"
 #include "td/utils/tl_helpers.h"
 
 #include <type_traits>
+#include <unordered_map>
 
 namespace td {
 
@@ -44,13 +55,15 @@ class RichText;
 struct GetWebPageBlockObjectContext {
   Td *td_ = nullptr;
   Slice base_url_;
+  string real_url_host_;
+  string real_url_rhash_;
 
   bool is_first_pass_ = true;
   bool has_anchor_urls_ = false;
   std::unordered_map<Slice, const RichText *, SliceHash> anchors_;  // anchor -> text
 };
 
-static vector<td_api::object_ptr<td_api::PageBlock>> get_page_block_objects(
+static vector<td_api::object_ptr<td_api::PageBlock>> get_page_blocks_object(
     const vector<unique_ptr<WebPageBlock>> &page_blocks, GetWebPageBlockObjectContext *context) {
   return transform(page_blocks, [context](const unique_ptr<WebPageBlock> &page_block) {
     return page_block->get_page_block_object(context);
@@ -58,7 +71,7 @@ static vector<td_api::object_ptr<td_api::PageBlock>> get_page_block_objects(
 }
 
 class RichText {
-  static vector<td_api::object_ptr<td_api::RichText>> get_rich_text_objects(const vector<RichText> &rich_texts,
+  static vector<td_api::object_ptr<td_api::RichText>> get_rich_texts_object(const vector<RichText> &rich_texts,
                                                                             GetWebPageBlockObjectContext *context) {
     return transform(rich_texts,
                      [context](const RichText &rich_text) { return rich_text.get_rich_text_object(context); });
@@ -144,12 +157,21 @@ class RichText {
             }
           }
         }
+        if (!context->real_url_rhash_.empty() && get_url_host(content) == context->real_url_host_) {
+          if (context->is_first_pass_) {
+            context->has_anchor_urls_ = true;
+          } else {
+            return make_tl_object<td_api::richTextUrl>(
+                texts[0].get_rich_text_object(context),
+                LinkManager::get_instant_view_link(content, context->real_url_rhash_), true);
+          }
+        }
         return make_tl_object<td_api::richTextUrl>(texts[0].get_rich_text_object(context), content,
                                                    web_page_id.is_valid());
       case RichText::Type::EmailAddress:
         return make_tl_object<td_api::richTextEmailAddress>(texts[0].get_rich_text_object(context), content);
       case RichText::Type::Concatenation:
-        return make_tl_object<td_api::richTexts>(get_rich_text_objects(texts, context));
+        return make_tl_object<td_api::richTexts>(get_rich_texts_object(texts, context));
       case RichText::Type::Subscript:
         return make_tl_object<td_api::richTextSubscript>(texts[0].get_rich_text_object(context));
       case RichText::Type::Superscript:
@@ -829,7 +851,7 @@ class WebPageBlockList final : public WebPageBlock {
                                                                                        Context *context) {
     // if label is empty, then Bullet U+2022 is used as a label
     return td_api::make_object<td_api::pageBlockListItem>(item.label.empty() ? "\xE2\x80\xA2" : item.label,
-                                                          get_page_block_objects(item.page_blocks, context));
+                                                          get_page_blocks_object(item.page_blocks, context));
   }
 
  public:
@@ -1191,8 +1213,8 @@ class WebPageBlockEmbedded final : public WebPageBlock {
   Photo poster_photo;
   Dimensions dimensions;
   WebPageBlockCaption caption;
-  bool is_full_width;
-  bool allow_scrolling;
+  bool is_full_width = false;
+  bool allow_scrolling = false;
 
  public:
   WebPageBlockEmbedded() = default;
@@ -1257,7 +1279,7 @@ class WebPageBlockEmbeddedPost final : public WebPageBlock {
   string url;
   string author;
   Photo author_photo;
-  int32 date;
+  int32 date = 0;
   vector<unique_ptr<WebPageBlock>> page_blocks;
   WebPageBlockCaption caption;
 
@@ -1288,7 +1310,7 @@ class WebPageBlockEmbeddedPost final : public WebPageBlock {
   td_api::object_ptr<td_api::PageBlock> get_page_block_object(Context *context) const final {
     return make_tl_object<td_api::pageBlockEmbeddedPost>(
         url, author, get_photo_object(context->td_->file_manager_.get(), author_photo), date,
-        get_page_block_objects(page_blocks, context), caption.get_page_block_caption_object(context));
+        get_page_blocks_object(page_blocks, context), caption.get_page_block_caption_object(context));
   }
 
   template <class StorerT>
@@ -1336,7 +1358,7 @@ class WebPageBlockCollage final : public WebPageBlock {
   }
 
   td_api::object_ptr<td_api::PageBlock> get_page_block_object(Context *context) const final {
-    return make_tl_object<td_api::pageBlockCollage>(get_page_block_objects(page_blocks, context),
+    return make_tl_object<td_api::pageBlockCollage>(get_page_blocks_object(page_blocks, context),
                                                     caption.get_page_block_caption_object(context));
   }
 
@@ -1377,7 +1399,7 @@ class WebPageBlockSlideshow final : public WebPageBlock {
   }
 
   td_api::object_ptr<td_api::PageBlock> get_page_block_object(Context *context) const final {
-    return make_tl_object<td_api::pageBlockSlideshow>(get_page_block_objects(page_blocks, context),
+    return make_tl_object<td_api::pageBlockSlideshow>(get_page_blocks_object(page_blocks, context),
                                                       caption.get_page_block_caption_object(context));
   }
 
@@ -1400,11 +1422,18 @@ class WebPageBlockChatLink final : public WebPageBlock {
   string title;
   DialogPhoto photo;
   string username;
+  AccentColorId accent_color_id;
+  ChannelId channel_id;
 
  public:
   WebPageBlockChatLink() = default;
-  WebPageBlockChatLink(string &&title, DialogPhoto photo, string &&username)
-      : title(std::move(title)), photo(std::move(photo)), username(std::move(username)) {
+  WebPageBlockChatLink(string &&title, DialogPhoto photo, string &&username, AccentColorId accent_color_id,
+                       ChannelId channel_id)
+      : title(std::move(title))
+      , photo(std::move(photo))
+      , username(std::move(username))
+      , accent_color_id(accent_color_id)
+      , channel_id(channel_id) {
   }
 
   Type get_type() const final {
@@ -1417,23 +1446,80 @@ class WebPageBlockChatLink final : public WebPageBlock {
 
   td_api::object_ptr<td_api::PageBlock> get_page_block_object(Context *context) const final {
     return make_tl_object<td_api::pageBlockChatLink>(
-        title, get_chat_photo_info_object(context->td_->file_manager_.get(), &photo), username);
+        title, get_chat_photo_info_object(context->td_->file_manager_.get(), &photo),
+        context->td_->theme_manager_->get_accent_color_id_object(accent_color_id, AccentColorId(channel_id)), username);
   }
 
   template <class StorerT>
   void store(StorerT &storer) const {
     using ::td::store;
-    store(title, storer);
-    store(photo, storer);
-    store(username, storer);
+    bool has_title = !title.empty();
+    bool has_photo = photo.small_file_id.is_valid();
+    bool has_username = !username.empty();
+    bool has_accent_color_id = true;
+    bool has_channel_id = channel_id.is_valid();
+    BEGIN_STORE_FLAGS();
+    STORE_FLAG(has_title);
+    STORE_FLAG(has_photo);
+    STORE_FLAG(has_username);
+    STORE_FLAG(has_accent_color_id);
+    STORE_FLAG(has_channel_id);
+    END_STORE_FLAGS();
+    if (has_title) {
+      store(title, storer);
+    }
+    if (has_photo) {
+      store(photo, storer);
+    }
+    if (has_username) {
+      store(username, storer);
+    }
+    store(accent_color_id, storer);
+    if (has_channel_id) {
+      store(channel_id, storer);
+    }
   }
 
   template <class ParserT>
   void parse(ParserT &parser) {
     using ::td::parse;
-    parse(title, parser);
-    parse(photo, parser);
-    parse(username, parser);
+    bool has_title;
+    bool has_photo;
+    bool has_username;
+    bool has_accent_color_id = false;
+    bool has_channel_id = false;
+    if (parser.version() >= static_cast<int32>(Version::AddPageBlockChatLinkFlags)) {
+      BEGIN_PARSE_FLAGS();
+      PARSE_FLAG(has_title);
+      PARSE_FLAG(has_photo);
+      PARSE_FLAG(has_username);
+      PARSE_FLAG(has_accent_color_id);
+      PARSE_FLAG(has_channel_id);
+      END_PARSE_FLAGS();
+    } else {
+      has_title = true;
+      has_photo = true;
+      has_username = true;
+    }
+    if (has_title) {
+      parse(title, parser);
+    }
+    if (has_photo) {
+      parse(photo, parser);
+    }
+    if (has_username) {
+      parse(username, parser);
+    }
+    if (has_accent_color_id) {
+      parse(accent_color_id, parser);
+    } else {
+      accent_color_id = AccentColorId(5);  // blue
+    }
+    if (has_channel_id) {
+      parse(channel_id, parser);
+    } else {
+      channel_id = ChannelId(static_cast<int64>(5));  // blue
+    }
   }
 };
 
@@ -1567,7 +1653,7 @@ class WebPageBlockTable final : public WebPageBlock {
 class WebPageBlockDetails final : public WebPageBlock {
   RichText header;
   vector<unique_ptr<WebPageBlock>> page_blocks;
-  bool is_open;
+  bool is_open = false;
 
  public:
   WebPageBlockDetails() = default;
@@ -1588,7 +1674,7 @@ class WebPageBlockDetails final : public WebPageBlock {
 
   td_api::object_ptr<td_api::PageBlock> get_page_block_object(Context *context) const final {
     return make_tl_object<td_api::pageBlockDetails>(header.get_rich_text_object(context),
-                                                    get_page_block_objects(page_blocks, context), is_open);
+                                                    get_page_blocks_object(page_blocks, context), is_open);
   }
 
   template <class StorerT>
@@ -1763,10 +1849,10 @@ class WebPageBlockVoiceNote final : public WebPageBlock {
 };
 
 vector<RichText> get_rich_texts(vector<tl_object_ptr<telegram_api::RichText>> &&rich_text_ptrs,
-                                const std::unordered_map<int64, FileId> &documents);
+                                const FlatHashMap<int64, FileId> &documents);
 
 RichText get_rich_text(tl_object_ptr<telegram_api::RichText> &&rich_text_ptr,
-                       const std::unordered_map<int64, FileId> &documents) {
+                       const FlatHashMap<int64, FileId> &documents) {
   CHECK(rich_text_ptr != nullptr);
 
   RichText result;
@@ -1881,14 +1967,14 @@ RichText get_rich_text(tl_object_ptr<telegram_api::RichText> &&rich_text_ptr,
 }
 
 vector<RichText> get_rich_texts(vector<tl_object_ptr<telegram_api::RichText>> &&rich_text_ptrs,
-                                const std::unordered_map<int64, FileId> &documents) {
+                                const FlatHashMap<int64, FileId> &documents) {
   return transform(std::move(rich_text_ptrs), [&documents](tl_object_ptr<telegram_api::RichText> &&rich_text) {
     return get_rich_text(std::move(rich_text), documents);
   });
 }
 
 WebPageBlockCaption get_page_block_caption(tl_object_ptr<telegram_api::pageCaption> &&page_caption,
-                                           const std::unordered_map<int64, FileId> &documents) {
+                                           const FlatHashMap<int64, FileId> &documents) {
   CHECK(page_caption != nullptr);
   WebPageBlockCaption result;
   result.text = get_rich_text(std::move(page_caption->text_), documents);
@@ -1897,12 +1983,12 @@ WebPageBlockCaption get_page_block_caption(tl_object_ptr<telegram_api::pageCapti
 }
 
 unique_ptr<WebPageBlock> get_web_page_block(Td *td, tl_object_ptr<telegram_api::PageBlock> page_block_ptr,
-                                            const std::unordered_map<int64, FileId> &animations,
-                                            const std::unordered_map<int64, FileId> &audios,
-                                            const std::unordered_map<int64, FileId> &documents,
-                                            const std::unordered_map<int64, Photo> &photos,
-                                            const std::unordered_map<int64, FileId> &videos,
-                                            const std::unordered_map<int64, FileId> &voice_notes) {
+                                            const FlatHashMap<int64, FileId> &animations,
+                                            const FlatHashMap<int64, FileId> &audios,
+                                            const FlatHashMap<int64, FileId> &documents,
+                                            const FlatHashMap<int64, unique_ptr<Photo>> &photos,
+                                            const FlatHashMap<int64, FileId> &videos,
+                                            const FlatHashMap<int64, FileId> &voice_notes) {
   CHECK(page_block_ptr != nullptr);
   switch (page_block_ptr->get_id()) {
     case telegram_api::pageBlockUnsupported::ID:
@@ -2025,17 +2111,11 @@ unique_ptr<WebPageBlock> get_web_page_block(Td *td, tl_object_ptr<telegram_api::
       auto it = photos.find(page_block->photo_id_);
       Photo photo;
       if (it != photos.end()) {
-        photo = it->second;
-      }
-      string url;
-      WebPageId web_page_id;
-      if ((page_block->flags_ & telegram_api::pageBlockPhoto::URL_MASK) != 0) {
-        url = std::move(page_block->url_);
-        web_page_id = WebPageId(page_block->webpage_id_);
+        photo = *it->second;
       }
       return td::make_unique<WebPageBlockPhoto>(std::move(photo),
                                                 get_page_block_caption(std::move(page_block->caption_), documents),
-                                                std::move(url), web_page_id);
+                                                std::move(page_block->url_), WebPageId(page_block->webpage_id_));
     }
     case telegram_api::pageBlockVideo::ID: {
       auto page_block = move_tl_object_as<telegram_api::pageBlockVideo>(page_block_ptr);
@@ -2043,7 +2123,6 @@ unique_ptr<WebPageBlock> get_web_page_block(Td *td, tl_object_ptr<telegram_api::
       bool is_looped = page_block->loop_;
       auto animations_it = animations.find(page_block->video_id_);
       if (animations_it != animations.end()) {
-        LOG_IF(ERROR, !is_looped) << "Receive non-looped animation";
         return make_unique<WebPageBlockAnimation>(
             animations_it->second, get_page_block_caption(std::move(page_block->caption_), documents), need_autoplay);
       }
@@ -2069,18 +2148,12 @@ unique_ptr<WebPageBlock> get_web_page_block(Td *td, tl_object_ptr<telegram_api::
       auto page_block = move_tl_object_as<telegram_api::pageBlockEmbed>(page_block_ptr);
       bool is_full_width = page_block->full_width_;
       bool allow_scrolling = page_block->allow_scrolling_;
-      bool has_dimensions = (page_block->flags_ & telegram_api::pageBlockEmbed::W_MASK) != 0;
-      auto it = (page_block->flags_ & telegram_api::pageBlockEmbed::POSTER_PHOTO_ID_MASK) != 0
-                    ? photos.find(page_block->poster_photo_id_)
-                    : photos.end();
       Photo poster_photo;
+      auto it = photos.find(page_block->poster_photo_id_);
       if (it != photos.end()) {
-        poster_photo = it->second;
+        poster_photo = *it->second;
       }
-      Dimensions dimensions;
-      if (has_dimensions) {
-        dimensions = get_dimensions(page_block->w_, page_block->h_, "pageBlockEmbed");
-      }
+      auto dimensions = get_dimensions(page_block->w_, page_block->h_, "pageBlockEmbed");
       return td::make_unique<WebPageBlockEmbedded>(
           std::move(page_block->url_), std::move(page_block->html_), std::move(poster_photo), dimensions,
           get_page_block_caption(std::move(page_block->caption_), documents), is_full_width, allow_scrolling);
@@ -2090,7 +2163,7 @@ unique_ptr<WebPageBlock> get_web_page_block(Td *td, tl_object_ptr<telegram_api::
       auto it = photos.find(page_block->author_photo_id_);
       Photo author_photo;
       if (it != photos.end()) {
-        author_photo = it->second;
+        author_photo = *it->second;
       }
       return td::make_unique<WebPageBlockEmbeddedPost>(
           std::move(page_block->url_), std::move(page_block->author_), std::move(author_photo), page_block->date_,
@@ -2121,19 +2194,21 @@ unique_ptr<WebPageBlock> get_web_page_block(Td *td, tl_object_ptr<telegram_api::
           return nullptr;
         }
 
-        if (td->contacts_manager_->have_channel_force(channel_id)) {
-          td->contacts_manager_->on_get_chat(std::move(page_block->channel_), "pageBlockChannel");
+        if (td->chat_manager_->have_channel_force(channel_id, "pageBlockChannel")) {
+          td->chat_manager_->on_get_chat(std::move(page_block->channel_), "pageBlockChannel");
           LOG(INFO) << "Receive known min " << channel_id;
-          return td::make_unique<WebPageBlockChatLink>(td->contacts_manager_->get_channel_title(channel_id),
-                                                       *td->contacts_manager_->get_channel_dialog_photo(channel_id),
-                                                       td->contacts_manager_->get_channel_username(channel_id));
+          return td::make_unique<WebPageBlockChatLink>(td->chat_manager_->get_channel_title(channel_id),
+                                                       *td->chat_manager_->get_channel_dialog_photo(channel_id),
+                                                       td->chat_manager_->get_channel_first_username(channel_id),
+                                                       td->chat_manager_->get_channel_accent_color_id(channel_id),
+                                                       channel_id);
         } else {
-          bool has_access_hash = (channel->flags_ & telegram_api::channel::ACCESS_HASH_MASK) != 0;
+          PeerColor peer_color(channel->color_);
           return td::make_unique<WebPageBlockChatLink>(
               std::move(channel->title_),
-              get_dialog_photo(td->file_manager_.get(), DialogId(channel_id),
-                               has_access_hash ? channel->access_hash_ : 0, std::move(channel->photo_)),
-              std::move(channel->username_));
+              get_dialog_photo(td->file_manager_.get(), DialogId(channel_id), channel->access_hash_,
+                               std::move(channel->photo_)),
+              std::move(channel->username_), peer_color.accent_color_id_, channel_id);
         }
       } else {
         LOG(ERROR) << "Receive wrong channel " << to_string(page_block->channel_);
@@ -2181,12 +2256,8 @@ unique_ptr<WebPageBlock> get_web_page_block(Td *td, tl_object_ptr<telegram_api::
           if (table_cell->text_ != nullptr) {
             cell.text = get_rich_text(std::move(table_cell->text_), documents);
           }
-          if ((table_cell->flags_ & telegram_api::pageTableCell::COLSPAN_MASK) != 0) {
-            cell.colspan = table_cell->colspan_;
-          }
-          if ((table_cell->flags_ & telegram_api::pageTableCell::ROWSPAN_MASK) != 0) {
-            cell.rowspan = table_cell->rowspan_;
-          }
+          cell.colspan = max(table_cell->colspan_, 1);
+          cell.rowspan = max(table_cell->rowspan_, 1);
           return cell;
         });
       });
@@ -2203,31 +2274,29 @@ unique_ptr<WebPageBlock> get_web_page_block(Td *td, tl_object_ptr<telegram_api::
     }
     case telegram_api::pageBlockRelatedArticles::ID: {
       auto page_block = move_tl_object_as<telegram_api::pageBlockRelatedArticles>(page_block_ptr);
-      auto articles = transform(
-          std::move(page_block->articles_), [&](tl_object_ptr<telegram_api::pageRelatedArticle> &&related_article) {
-            RelatedArticle article;
-            article.url = std::move(related_article->url_);
-            article.web_page_id = WebPageId(related_article->webpage_id_);
-            article.title = std::move(related_article->title_);
-            article.description = std::move(related_article->description_);
-            auto it = (related_article->flags_ & telegram_api::pageRelatedArticle::PHOTO_ID_MASK) != 0
-                          ? photos.find(related_article->photo_id_)
-                          : photos.end();
-            if (it != photos.end()) {
-              article.photo = it->second;
-            }
-            article.author = std::move(related_article->author_);
-            if ((related_article->flags_ & telegram_api::pageRelatedArticle::PUBLISHED_DATE_MASK) != 0) {
-              article.published_date = related_article->published_date_;
-            }
-            return article;
-          });
+      auto articles = transform(std::move(page_block->articles_),
+                                [&](tl_object_ptr<telegram_api::pageRelatedArticle> &&related_article) {
+                                  RelatedArticle article;
+                                  article.url = std::move(related_article->url_);
+                                  article.web_page_id = WebPageId(related_article->webpage_id_);
+                                  article.title = std::move(related_article->title_);
+                                  article.description = std::move(related_article->description_);
+                                  auto it = photos.find(related_article->photo_id_);
+                                  if (it != photos.end()) {
+                                    article.photo = *it->second;
+                                  }
+                                  article.author = std::move(related_article->author_);
+                                  if (related_article->published_date_ > 0) {
+                                    article.published_date = related_article->published_date_;
+                                  }
+                                  return article;
+                                });
       return td::make_unique<WebPageBlockRelatedArticles>(get_rich_text(std::move(page_block->title_), documents),
                                                           std::move(articles));
     }
     case telegram_api::pageBlockMap::ID: {
       auto page_block = move_tl_object_as<telegram_api::pageBlockMap>(page_block_ptr);
-      Location location(page_block->geo_);
+      Location location(td, page_block->geo_);
       auto zoom = page_block->zoom_;
       Dimensions dimensions = get_dimensions(page_block->w_, page_block->h_, "pageBlockMap");
       if (location.empty()) {
@@ -2368,9 +2437,9 @@ void parse(unique_ptr<WebPageBlock> &block, LogEventParser &parser) {
 
 vector<unique_ptr<WebPageBlock>> get_web_page_blocks(
     Td *td, vector<tl_object_ptr<telegram_api::PageBlock>> page_block_ptrs,
-    const std::unordered_map<int64, FileId> &animations, const std::unordered_map<int64, FileId> &audios,
-    const std::unordered_map<int64, FileId> &documents, const std::unordered_map<int64, Photo> &photos,
-    const std::unordered_map<int64, FileId> &videos, const std::unordered_map<int64, FileId> &voice_notes) {
+    const FlatHashMap<int64, FileId> &animations, const FlatHashMap<int64, FileId> &audios,
+    const FlatHashMap<int64, FileId> &documents, const FlatHashMap<int64, unique_ptr<Photo>> &photos,
+    const FlatHashMap<int64, FileId> &videos, const FlatHashMap<int64, FileId> &voice_notes) {
   vector<unique_ptr<WebPageBlock>> result;
   result.reserve(page_block_ptrs.size());
   for (auto &page_block_ptr : page_block_ptrs) {
@@ -2383,19 +2452,41 @@ vector<unique_ptr<WebPageBlock>> get_web_page_blocks(
   return result;
 }
 
-vector<td_api::object_ptr<td_api::PageBlock>> get_page_block_objects(
-    const vector<unique_ptr<WebPageBlock>> &page_blocks, Td *td, Slice base_url) {
+vector<td_api::object_ptr<td_api::PageBlock>> get_page_blocks_object(
+    const vector<unique_ptr<WebPageBlock>> &page_blocks, Td *td, Slice base_url, Slice real_url) {
   GetWebPageBlockObjectContext context;
   context.td_ = td;
   context.base_url_ = base_url;
-  auto blocks = get_page_block_objects(page_blocks, &context);
-  if (context.anchors_.empty() || !context.has_anchor_urls_) {
+  context.real_url_rhash_ = LinkManager::get_instant_view_link_rhash(real_url);
+  if (!context.real_url_rhash_.empty()) {
+    context.real_url_host_ = get_url_host(LinkManager::get_instant_view_link_url(real_url));
+    if (context.real_url_host_.empty()) {
+      context.real_url_rhash_ = string();
+    }
+  }
+  auto blocks = get_page_blocks_object(page_blocks, &context);
+  if (!context.has_anchor_urls_) {
     return blocks;
   }
 
   context.is_first_pass_ = false;
   context.anchors_.emplace(Slice(), nullptr);  // back to top
-  return get_page_block_objects(page_blocks, &context);
+  return get_page_blocks_object(page_blocks, &context);
+}
+
+bool WebPageBlock::are_allowed_album_block_types(const vector<unique_ptr<WebPageBlock>> &page_blocks) {
+  for (const auto &block : page_blocks) {
+    switch (block->get_type()) {
+      case Type::Title:
+      case Type::AuthorDate:
+      case Type::Collage:
+      case Type::Slideshow:
+        continue;
+      default:
+        return false;
+    }
+  }
+  return true;
 }
 
 }  // namespace td

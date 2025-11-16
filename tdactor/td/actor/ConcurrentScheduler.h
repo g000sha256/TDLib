@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -26,14 +26,16 @@ namespace td {
 
 class ConcurrentScheduler final : private Scheduler::Callback {
  public:
-  void init(int32 threads_n);
+  explicit ConcurrentScheduler(int32 additional_thread_count, uint64 thread_affinity_mask = 0);
 
   void finish_async() {
     schedulers_[0]->finish();
   }
+
   void wakeup() {
     schedulers_[0]->wakeup();
   }
+
   SchedulerGuard get_main_guard() {
     return schedulers_[0]->get_guard();
   }
@@ -47,6 +49,14 @@ class ConcurrentScheduler final : private Scheduler::Callback {
   bool is_finished() const {
     return is_finished_.load(std::memory_order_relaxed);
   }
+
+#if TD_THREAD_UNSUPPORTED
+  int get_scheduler_thread_id(int32 sched_id) {
+    return 1;
+  }
+#else
+  thread::id get_scheduler_thread_id(int32 sched_id);
+#endif
 
   void start();
 
@@ -90,6 +100,7 @@ class ConcurrentScheduler final : private Scheduler::Callback {
   std::atomic<bool> is_finished_{false};
 #if !TD_THREAD_UNSUPPORTED && !TD_EVENTFD_UNSUPPORTED
   vector<td::thread> threads_;
+  uint64 thread_affinity_mask_ = 0;
 #endif
 #if TD_PORT_WINDOWS
   unique_ptr<detail::Iocp> iocp_;

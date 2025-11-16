@@ -1,6 +1,8 @@
-if ((CMAKE_MAJOR_VERSION LESS 3) OR (CMAKE_VERSION VERSION_LESS "3.0.2"))
-  message(FATAL_ERROR "CMake >= 3.0.2 is required")
+if ((CMAKE_MAJOR_VERSION LESS 3) OR (CMAKE_VERSION VERSION_LESS "3.10"))
+  message(FATAL_ERROR "CMake >= 3.10 is required")
 endif()
+
+option(TDSQLITE_ENABLE_INSTALL "Enable installation of the library." ON)
 
 if (NOT DEFINED CMAKE_INSTALL_LIBDIR)
   set(CMAKE_INSTALL_LIBDIR "lib")
@@ -18,6 +20,8 @@ set(SQLITE_SOURCE
   sqlite/sqlite3ext.h
   sqlite/sqlite3session.h
 )
+
+# all SQLite functions are moved to namespace tdsqlite3 by `sed -Ebi 's/sqlite3([^.]|$)/td&/g' *`
 
 add_library(tdsqlite STATIC ${SQLITE_SOURCE})
 target_include_directories(tdsqlite PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
@@ -57,9 +61,9 @@ if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
 endif()
 
 if (GCC OR CLANG)
-  target_compile_options(tdsqlite PRIVATE -Wno-deprecated-declarations -Wno-unused-variable -Wno-unused-const-variable -Wno-unused-function)
+  target_compile_options(tdsqlite PRIVATE -Wno-deprecated-declarations -Wno-unused-variable -Wno-unused-const-variable -Wno-unused-function -Wno-maybe-uninitialized -Wno-return-local-addr)
   if (CLANG)
-    target_compile_options(tdsqlite PRIVATE -Wno-parentheses-equality -Wno-unused-value -Wno-unused-command-line-argument -Qunused-arguments)
+    target_compile_options(tdsqlite PRIVATE -Wno-parentheses-equality -Wno-unused-value -Wno-unknown-warning-option -Wno-unused-command-line-argument -Qunused-arguments)
   endif()
   if (GCC AND NOT (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10.0))
     target_compile_options(tdsqlite PRIVATE -Wno-return-local-addr -Wno-stringop-overflow)
@@ -68,7 +72,9 @@ elseif (MSVC)
   target_compile_options(tdsqlite PRIVATE /wd4996)
 endif()
 
-install(TARGETS tdsqlite EXPORT TdTargets
-  LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-  ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-)
+if (TDSQLITE_ENABLE_INSTALL)
+  install(TARGETS tdsqlite EXPORT TdStaticTargets
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+  )
+endif()

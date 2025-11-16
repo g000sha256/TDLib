@@ -1,5 +1,5 @@
 ﻿//
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -36,17 +36,16 @@ namespace TdApp
             });
 
             _client = Td.Client.Create(_handler);
-            var parameters = new TdApi.TdlibParameters();
-            parameters.DatabaseDirectory = Windows.Storage.ApplicationData.Current.LocalFolder.Path;
-            parameters.UseSecretChats = true;
-            parameters.UseMessageDatabase = true;
-            parameters.ApiId = 94575;
-            parameters.ApiHash = "a3406de8d171bb422bb6ddf3bbd800e2";
-            parameters.SystemLanguageCode = "en";
-            parameters.DeviceModel = "Desktop";
-            parameters.ApplicationVersion = "1.0.0";
-            _client.Send(new TdApi.SetTdlibParameters(parameters), null);
-            _client.Send(new TdApi.CheckDatabaseEncryptionKey(), null);
+            var request = new TdApi.SetTdlibParameters();
+            request.DatabaseDirectory = Windows.Storage.ApplicationData.Current.LocalFolder.Path;
+            request.UseSecretChats = true;
+            request.UseMessageDatabase = true;
+            request.ApiId = 94575;
+            request.ApiHash = "a3406de8d171bb422bb6ddf3bbd800e2";
+            request.SystemLanguageCode = "en";
+            request.DeviceModel = "Desktop";
+            request.ApplicationVersion = "1.0.0";
+            _client.Send(request, null);
         }
 
         public void Print(String str)
@@ -86,16 +85,23 @@ namespace TdApp
                 AcceptCommand("LogOut");
                 _client.Send(new TdApi.LogOut(), _handler);
             }
-            else if (command.StartsWith("gas"))
-            {
-                AcceptCommand(command);
-                _client.Send(new TdApi.GetAuthorizationState(), _handler);
-            }
             else if (command.StartsWith("sap"))
             {
                 var args = command.Split(" ".ToCharArray(), 2);
                 AcceptCommand(command);
                 _client.Send(new TdApi.SetAuthenticationPhoneNumber(args[1], null), _handler);
+            }
+            else if (command.StartsWith("sae"))
+            {
+                var args = command.Split(" ".ToCharArray(), 2);
+                AcceptCommand(command);
+                _client.Send(new TdApi.SetAuthenticationEmailAddress(args[1]), _handler);
+            }
+            else if (command.StartsWith("caec"))
+            {
+                var args = command.Split(" ".ToCharArray(), 2);
+                AcceptCommand(command);
+                _client.Send(new TdApi.CheckAuthenticationEmailCode(new TdApi.EmailAddressAuthenticationCode(args[1])), _handler);
             }
             else if (command.StartsWith("cac"))
             {

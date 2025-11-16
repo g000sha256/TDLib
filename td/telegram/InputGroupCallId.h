@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -9,9 +9,8 @@
 #include "td/telegram/telegram_api.h"
 
 #include "td/utils/common.h"
+#include "td/utils/HashTableUtils.h"
 #include "td/utils/StringBuilder.h"
-
-#include <functional>
 
 namespace td {
 
@@ -22,7 +21,7 @@ class InputGroupCallId {
  public:
   InputGroupCallId() = default;
 
-  explicit InputGroupCallId(const tl_object_ptr<telegram_api::inputGroupCall> &input_group_call);
+  explicit InputGroupCallId(const telegram_api::object_ptr<telegram_api::InputGroupCall> &input_group_call);
 
   InputGroupCallId(int64 group_call_id, int64 access_hash) : group_call_id(group_call_id), access_hash(access_hash) {
   }
@@ -43,11 +42,11 @@ class InputGroupCallId {
     return group_call_id != 0;
   }
 
-  std::size_t get_hash() const {
-    return std::hash<int64>()(group_call_id);
+  uint32 get_hash() const {
+    return Hash<int64>()(group_call_id);
   }
 
-  tl_object_ptr<telegram_api::inputGroupCall> get_input_group_call() const;
+  telegram_api::object_ptr<telegram_api::inputGroupCall> get_input_group_call() const;
 
   template <class StorerT>
   void store(StorerT &storer) const {
@@ -65,7 +64,7 @@ class InputGroupCallId {
 };
 
 struct InputGroupCallIdHash {
-  std::size_t operator()(InputGroupCallId input_group_call_id) const {
+  uint32 operator()(InputGroupCallId input_group_call_id) const {
     return input_group_call_id.get_hash();
   }
 };

@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -9,9 +9,9 @@
 #include "td/telegram/Version.h"
 
 #include "td/utils/common.h"
+#include "td/utils/HashTableUtils.h"
 #include "td/utils/StringBuilder.h"
 
-#include <functional>
 #include <type_traits>
 
 namespace td {
@@ -20,20 +20,23 @@ class UserId {
   int64 id = 0;
 
  public:
-  static constexpr int64 MAX_USER_ID = (1ll << 40) - 1;
+  static constexpr int64 MAX_USER_ID = (static_cast<int64>(1) << 40) - 1;
 
   UserId() = default;
 
-  explicit UserId(int64 user_id) : id(user_id) {
+  explicit constexpr UserId(int64 user_id) : id(user_id) {
   }
   template <class T, typename = std::enable_if_t<std::is_convertible<T, int64>::value>>
   UserId(T user_id) = delete;
 
-  static vector<UserId> get_user_ids(const vector<int64> &input_user_ids) {
+  static vector<UserId> get_user_ids(const vector<int64> &input_user_ids, bool only_valid = false) {
     vector<UserId> user_ids;
     user_ids.reserve(input_user_ids.size());
     for (auto &input_user_id : input_user_ids) {
-      user_ids.emplace_back(input_user_id);
+      UserId user_id(input_user_id);
+      if (!only_valid || user_id.is_valid()) {
+        user_ids.emplace_back(user_id);
+      }
     }
     return user_ids;
   }
@@ -79,8 +82,8 @@ class UserId {
 };
 
 struct UserIdHash {
-  std::size_t operator()(UserId user_id) const {
-    return std::hash<int64>()(user_id.get());
+  uint32 operator()(UserId user_id) const {
+    return Hash<int64>()(user_id.get());
   }
 };
 

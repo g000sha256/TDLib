@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -13,7 +13,7 @@
 class Worker final : public td::Actor {
  public:
   void ping(int x) {
-    LOG(ERROR) << "Got ping " << x;
+    LOG(ERROR) << "Receive ping " << x;
   }
 };
 
@@ -36,8 +36,7 @@ class MainActor final : public td::Actor {
 };
 
 int main() {
-  td::ConcurrentScheduler scheduler;
-  scheduler.init(4 /*threads_count*/);
+  td::ConcurrentScheduler scheduler(4 /*thread_count*/, 0);
   scheduler.start();
   {
     auto guard = scheduler.get_main_guard();
@@ -47,5 +46,4 @@ int main() {
     scheduler.run_main(td::Timestamp::in(10));
   }
   scheduler.finish();
-  return 0;
 }

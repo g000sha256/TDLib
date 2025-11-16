@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -7,7 +7,11 @@
 #include "td/telegram/misc.h"
 
 #include "td/utils/algorithm.h"
+#include "td/utils/as.h"
+#include "td/utils/bits.h"
 #include "td/utils/common.h"
+#include "td/utils/crypto.h"
+#include "td/utils/Hints.h"
 #include "td/utils/misc.h"
 #include "td/utils/Slice.h"
 #include "td/utils/utf8.h"
@@ -51,6 +55,10 @@ string clean_username(string str) {
   return trim(str);
 }
 
+void clean_phone_number(string &phone_number) {
+  td::remove_if(phone_number, [](char c) { return !is_digit(c); });
+}
+
 void replace_offending_characters(string &str) {
   // "(\xe2\x80\x8f|\xe2\x80\x8e){N}(\xe2\x80\x8f|\xe2\x80\x8e)" -> "(\xe2\x80\x8c){N}$2"
   auto s = MutableSlice(str).ubegin();
@@ -66,7 +74,7 @@ void replace_offending_characters(string &str) {
 }
 
 bool clean_input_string(string &str) {
-  constexpr size_t LENGTH_LIMIT = 35000;  // server side limit
+  constexpr size_t LENGTH_LIMIT = 35000;  // server-side limit
   if (!check_utf8(str)) {
     return false;
   }
@@ -163,11 +171,12 @@ string strip_empty_characters(string str, size_t max_length, bool strip_rtlo) {
       CHECK(std::strlen(space_ch) == 3);
       can_be_first[static_cast<unsigned char>(space_ch[0])] = true;
     }
+    can_be_first[0xF3] = true;
     return true;
   }();
   CHECK(can_be_first_inited);
 
-  // replace all occurences of space characters with a space
+  // replace all occurrences of space characters with a space
   size_t i = 0;
   while (i < str.size() && !can_be_first[static_cast<unsigned char>(str[i])]) {
     i++;
@@ -175,20 +184,29 @@ string strip_empty_characters(string str, size_t max_length, bool strip_rtlo) {
   size_t new_len = i;
   while (i < str.size()) {
     if (can_be_first[static_cast<unsigned char>(str[i])] && i + 3 <= str.size()) {
-      bool found = false;
-      for (auto space_ch : space_characters) {
-        if (space_ch[0] == str[i] && space_ch[1] == str[i + 1] && space_ch[2] == str[i + 2]) {
-          if (static_cast<unsigned char>(str[i + 2]) != 0xAE || static_cast<unsigned char>(str[i + 1]) != 0x80 ||
-              static_cast<unsigned char>(str[i]) != 0xE2 || strip_rtlo) {
-            found = true;
-          }
-          break;
+      if (static_cast<unsigned char>(str[i]) == 0xF3) {
+        if (static_cast<unsigned char>(str[i + 1]) == 0xA0 && (static_cast<unsigned char>(str[i + 2]) & 0xFE) == 0x80 &&
+            i + 4 <= str.size()) {
+          str[new_len++] = ' ';
+          i += 4;
+          continue;
         }
-      }
-      if (found) {
-        str[new_len++] = ' ';
-        i += 3;
-        continue;
+      } else {
+        bool found = false;
+        for (auto space_ch : space_characters) {
+          if (space_ch[0] == str[i] && space_ch[1] == str[i + 1] && space_ch[2] == str[i + 2]) {
+            if (static_cast<unsigned char>(str[i + 2]) != 0xAE || static_cast<unsigned char>(str[i + 1]) != 0x80 ||
+                static_cast<unsigned char>(str[i]) != 0xE2 || strip_rtlo) {
+              found = true;
+            }
+            break;
+          }
+        }
+        if (found) {
+          str[new_len++] = ' ';
+          i += 3;
+          continue;
+        }
       }
     }
     str[new_len++] = str[i++];
@@ -239,6 +257,57 @@ bool is_empty_string(const string &str) {
   return strip_empty_characters(str, str.size()).empty();
 }
 
+bool is_valid_username(Slice username) {
+  if (username.empty() || username.size() > 32) {
+    return false;
+  }
+  if (!is_alpha(username[0])) {
+    return false;
+  }
+  for (auto c : username) {
+    if (!is_alpha(c) && !is_digit(c) && c != '_') {
+      return false;
+    }
+  }
+  if (username.back() == '_') {
+    return false;
+  }
+  for (size_t i = 1; i < username.size(); i++) {
+    if (username[i - 1] == '_' && username[i] == '_') {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool is_allowed_username(Slice username) {
+  if (!is_valid_username(username)) {
+    return false;
+  }
+  if (username.size() < 5) {
+    return false;
+  }
+  auto username_lowered = to_lower(username);
+  if (username_lowered.find("admin") == 0 || username_lowered.find("telegram") == 0 ||
+      username_lowered.find("support") == 0 || username_lowered.find("security") == 0 ||
+      username_lowered.find("settings") == 0 || username_lowered.find("contacts") == 0 ||
+      username_lowered.find("service") == 0 || username_lowered.find("telegraph") == 0) {
+    return false;
+  }
+  return true;
+}
+
+uint64 get_md5_string_hash(const string &str) {
+  unsigned char hash[16];
+  md5(str, {hash, sizeof(hash)});
+  uint64 result = 0;
+  for (int i = 0; i <= 7; i++) {
+    result += static_cast<uint64>(hash[i]) << (56 - 8 * i);
+  }
+  return result;
+}
+
 int64 get_vector_hash(const vector<uint64> &numbers) {
   uint64 acc = 0;
   for (auto number : numbers) {
@@ -250,6 +319,7 @@ int64 get_vector_hash(const vector<uint64> &numbers) {
   return static_cast<int64>(acc);
 }
 
+// returns emoji corresponding to the specified number
 string get_emoji_fingerprint(uint64 num) {
   static const vector<Slice> emojis{
       u8"\U0001f609", u8"\U0001f60d", u8"\U0001f61b", u8"\U0001f62d", u8"\U0001f631", u8"\U0001f621", u8"\U0001f60e",
@@ -305,6 +375,45 @@ string get_emoji_fingerprint(uint64 num) {
       u8"\U0001f537"};
 
   return emojis[static_cast<size_t>((num & 0x7FFFFFFFFFFFFFFF) % emojis.size())].str();
+}
+
+vector<string> get_emoji_fingerprints(const unsigned char *buffer) {
+  vector<string> result;
+  result.reserve(4);
+  for (int i = 0; i < 4; i++) {
+    uint64 num = big_endian_to_host64(as<uint64>(buffer + 8 * i));
+    result.push_back(get_emoji_fingerprint(num));
+  }
+  return result;
+}
+
+bool check_currency_amount(int64 amount) {
+  constexpr int64 MAX_AMOUNT = 9999'9999'9999;
+  return -MAX_AMOUNT <= amount && amount <= MAX_AMOUNT;
+}
+
+Status validate_bot_language_code(const string &language_code) {
+  if (language_code.empty()) {
+    return Status::OK();
+  }
+  if (language_code.size() == 2 && 'a' <= language_code[0] && language_code[0] <= 'z' && 'a' <= language_code[1] &&
+      language_code[1] <= 'z') {
+    return Status::OK();
+  }
+  return Status::Error(400, "Invalid language code specified");
+}
+
+vector<int32> search_strings_by_prefix(const vector<string> &strings, const string &query, int32 limit,
+                                       bool return_all_for_empty_query, int32 &total_count) {
+  Hints hints;
+  for (size_t i = 0; i < strings.size(); i++) {
+    const auto &str = strings[i];
+    hints.add(i, str.empty() ? Slice(" ") : Slice(str));
+    hints.set_rating(i, i);
+  }
+  auto result = hints.search(query, limit, return_all_for_empty_query);
+  total_count = narrow_cast<int32>(result.first);
+  return transform(result.second, [](int64 key) { return narrow_cast<int32>(key); });
 }
 
 }  // namespace td

@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -50,8 +50,8 @@ Result<T> read_file_impl(CSlice path, int64 size, int64 offset) {
     size = file_size - offset;
   }
   auto content = create_empty<T>(narrow_cast<size_t>(size));
-  TRY_RESULT(got_size, from_file.pread(as_mutable_slice(content), offset));
-  if (got_size != static_cast<size_t>(size)) {
+  TRY_RESULT(read_size, from_file.pread(as_mutable_slice(content), offset));
+  if (read_size != static_cast<size_t>(size)) {
     return Status::Error("Failed to read file");
   }
   from_file.close();
@@ -133,7 +133,7 @@ static string clean_filename_part(Slice name, int max_length) {
   int size = 0;
   for (auto *it = name.ubegin(); it != name.uend() && size < max_length;) {
     uint32 code;
-    it = next_utf8_unsafe(it, &code, "clean_filename_part");
+    it = next_utf8_unsafe(it, &code);
     if (!is_ok(code)) {
       if (prepare_search_character(code) == 0) {
         continue;
@@ -159,8 +159,8 @@ string clean_filename(CSlice name) {
   }
 
   PathView path_view(name);
-  auto filename = clean_filename_part(path_view.file_stem(), 60);
-  auto extension = clean_filename_part(path_view.extension(), 20);
+  auto filename = clean_filename_part(path_view.file_stem(), 64);
+  auto extension = clean_filename_part(path_view.extension(), 16);
   if (!extension.empty()) {
     if (filename.empty()) {
       filename = std::move(extension);

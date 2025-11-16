@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -16,13 +16,13 @@
 namespace td {
 
 class TD_TL_writer_jni_cpp final : public TD_TL_writer_cpp {
+  std::string gen_output_begin_once() const final;
+
   std::string gen_vector_fetch(std::string field_name, const tl::tl_tree_type *t,
                                const std::vector<tl::var_description> &vars, int parser_type) const;
 
   std::string gen_vector_store(const std::string &field_name, const tl::tl_tree_type *t,
                                const std::vector<tl::var_description> &vars, int storer_type) const;
-
-  std::string package_name;
 
   std::string gen_java_field_name(std::string name) const;
 
@@ -54,8 +54,8 @@ class TD_TL_writer_jni_cpp final : public TD_TL_writer_cpp {
   std::string gen_base_type_class_name(int arity) const final;
   std::string gen_base_tl_class_name() const final;
 
-  std::string gen_class_begin(const std::string &class_name, const std::string &base_class_name,
-                              bool is_proxy) const final;
+  std::string gen_class_begin(const std::string &class_name, const std::string &base_class_name, bool is_proxy,
+                              const tl::tl_tree *result) const final;
 
   std::string gen_field_definition(const std::string &class_name, const std::string &type_name,
                                    const std::string &field_name) const final;
@@ -64,8 +64,8 @@ class TD_TL_writer_jni_cpp final : public TD_TL_writer_cpp {
 
   std::string gen_field_fetch(int field_num, const tl::arg &a, std::vector<tl::var_description> &vars, bool flat,
                               int parser_type) const final;
-  std::string gen_field_store(const tl::arg &a, std::vector<tl::var_description> &vars, bool flat,
-                              int storer_type) const final;
+  std::string gen_field_store(const tl::arg &a, const std::vector<tl::arg> &args,
+                              std::vector<tl::var_description> &vars, bool flat, int storer_type) const final;
   std::string gen_type_fetch(const std::string &field_name, const tl::tl_tree_type *tree_type,
                              const std::vector<tl::var_description> &vars, int parser_type) const final;
   std::string gen_type_store(const std::string &field_name, const tl::tl_tree_type *tree_type,

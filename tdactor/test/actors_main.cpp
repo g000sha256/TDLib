@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -45,17 +45,17 @@ static td::uint32 slow_pow_mod_uint32(td::uint32 x, td::uint32 p) {
   return res;
 }
 
-struct Query {
+struct ActorQuery {
   td::uint32 query_id{};
   td::uint32 result{};
   td::vector<int> todo;
-  Query() = default;
-  Query(const Query &) = delete;
-  Query &operator=(const Query &) = delete;
-  Query(Query &&) = default;
-  Query &operator=(Query &&) = default;
-  ~Query() {
-    LOG_CHECK(todo.empty()) << "Query lost";
+  ActorQuery() = default;
+  ActorQuery(const ActorQuery &) = delete;
+  ActorQuery &operator=(const ActorQuery &) = delete;
+  ActorQuery(ActorQuery &&) = default;
+  ActorQuery &operator=(ActorQuery &&) = default;
+  ~ActorQuery() {
+    LOG_CHECK(todo.empty()) << "ActorQuery lost";
   }
   int next_pow() {
     CHECK(!todo.empty());
@@ -68,7 +68,7 @@ struct Query {
   }
 };
 
-static td::uint32 fast_calc(Query &q) {
+static td::uint32 fast_calc(ActorQuery &q) {
   td::uint32 result = q.result;
   for (auto x : q.todo) {
     result = fast_pow_mod_uint32(result, x);
@@ -104,7 +104,7 @@ class QueryActor final : public td::Actor {
     Callback(Callback &&) = delete;
     Callback &operator=(Callback &&) = delete;
     virtual ~Callback() = default;
-    virtual void on_result(Query &&query) = 0;
+    virtual void on_result(ActorQuery &&query) = 0;
     virtual void on_closed() = 0;
   };
 
@@ -118,7 +118,7 @@ class QueryActor final : public td::Actor {
     workers_ = std::move(workers);
   }
 
-  void query(Query &&query) {
+  void query(ActorQuery &&query) {
     td::uint32 x = query.result;
     td::uint32 p = query.next_pow();
     if (td::Random::fast(0, 3) && (p <= 1000 || workers_.empty())) {
@@ -126,8 +126,8 @@ class QueryActor final : public td::Actor {
       callback_->on_result(std::move(query));
     } else {
       auto future = td::Random::fast(0, 3) == 0
-                        ? td::send_promise<td::ActorSendType::Immediate>(rand_elem(workers_), &Worker::query, x, p)
-                        : td::send_promise<td::ActorSendType::Later>(rand_elem(workers_), &Worker::query, x, p);
+                        ? td::send_promise_immediately(rand_elem(workers_), &Worker::query, x, p)
+                        : td::send_promise_later(rand_elem(workers_), &Worker::query, x, p);
       if (future.is_ready()) {
         query.result = future.move_as_ok();
         callback_->on_result(std::move(query));
@@ -171,7 +171,7 @@ class QueryActor final : public td::Actor {
 
  private:
   td::unique_ptr<Callback> callback_;
-  std::map<td::uint32, std::pair<td::FutureActor<td::uint32>, Query>> pending_;
+  std::map<td::uint32, std::pair<td::FutureActor<td::uint32>, ActorQuery>> pending_;
   td::vector<td::ActorId<Worker>> workers_;
   int threads_n_;
 };
@@ -179,7 +179,7 @@ class QueryActor final : public td::Actor {
 class MainQueryActor final : public td::Actor {
   class QueryActorCallback final : public QueryActor::Callback {
    public:
-    void on_result(Query &&query) final {
+    void on_result(ActorQuery &&query) final {
       if (query.ready()) {
         send_closure(parent_id_, &MainQueryActor::on_result, std::move(query));
       } else {
@@ -229,15 +229,15 @@ class MainQueryActor final : public td::Actor {
     yield();
   }
 
-  void on_result(Query &&query) {
+  void on_result(ActorQuery &&query) {
     CHECK(query.ready());
     CHECK(query.result == expected_[query.query_id]);
     in_cnt_++;
     wakeup();
   }
 
-  Query create_query() {
-    Query q;
+  ActorQuery create_query() {
+    ActorQuery q;
     q.query_id = (query_id_ += 2);
     q.result = q.query_id;
     q.todo = {1, 1, 1, 1, 1, 1, 1, 1, 10000};
@@ -253,7 +253,7 @@ class MainQueryActor final : public td::Actor {
   }
 
   void wakeup() final {
-    int cnt = 100000;
+    int cnt = 10000;
     while (out_cnt_ < in_cnt_ + 100 && out_cnt_ < cnt) {
       if (td::Random::fast_bool()) {
         send_closure(rand_elem(actors_), &QueryActor::query, create_query());
@@ -294,16 +294,15 @@ class SimpleActor final : public td::Actor {
   }
 
   void wakeup() final {
-    if (q_ == 100000) {
+    if (q_ == 10000) {
       td::Scheduler::instance()->finish();
       stop();
       return;
     }
     q_++;
     p_ = td::Random::fast_bool() ? 1 : 10000;
-    auto future = td::Random::fast(0, 3) == 0
-                      ? td::send_promise<td::ActorSendType::Immediate>(worker_, &Worker::query, q_, p_)
-                      : td::send_promise<td::ActorSendType::Later>(worker_, &Worker::query, q_, p_);
+    auto future = td::Random::fast(0, 3) == 0 ? td::send_promise_immediately(worker_, &Worker::query, q_, p_)
+                                              : td::send_promise_later(worker_, &Worker::query, q_, p_);
     if (future.is_ready()) {
       auto result = future.move_as_ok();
       CHECK(result == fast_pow_mod_uint32(q_, p_));
@@ -394,9 +393,8 @@ class SendToDead final : public td::Actor {
 TEST(Actors, send_to_dead) {
   //TODO: fix CHECK(storage_count_.load() == 0)
   return;
-  td::ConcurrentScheduler sched;
   int threads_n = 5;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(threads_n, 0);
 
   sched.create_actor_unsafe<SendToDead>(0, "SendToDead").release();
   sched.start();
@@ -407,9 +405,8 @@ TEST(Actors, send_to_dead) {
 }
 
 TEST(Actors, main_simple) {
-  td::ConcurrentScheduler sched;
   int threads_n = 3;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(threads_n, 0);
 
   sched.create_actor_unsafe<SimpleActor>(threads_n > 1 ? 1 : 0, "simple", threads_n).release();
   sched.start();
@@ -420,9 +417,8 @@ TEST(Actors, main_simple) {
 }
 
 TEST(Actors, main) {
-  td::ConcurrentScheduler sched;
   int threads_n = 9;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(threads_n, 0);
 
   sched.create_actor_unsafe<MainQueryActor>(threads_n > 1 ? 1 : 0, "MainQuery", threads_n).release();
   sched.start();
@@ -446,9 +442,8 @@ class DoAfterStop final : public td::Actor {
 };
 
 TEST(Actors, do_after_stop) {
-  td::ConcurrentScheduler sched;
   int threads_n = 0;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(threads_n, 0);
 
   sched.create_actor_unsafe<DoAfterStop>(0, "DoAfterStop").release();
   sched.start();
@@ -492,9 +487,8 @@ static void check_context() {
 }
 
 TEST(Actors, context_during_destruction) {
-  td::ConcurrentScheduler sched;
   int threads_n = 0;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(threads_n, 0);
 
   {
     auto guard = sched.get_main_guard();

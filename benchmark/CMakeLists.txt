@@ -1,5 +1,5 @@
-if ((CMAKE_MAJOR_VERSION LESS 3) OR (CMAKE_VERSION VERSION_LESS "3.0.2"))
-  message(FATAL_ERROR "CMake >= 3.0.2 is required")
+if ((CMAKE_MAJOR_VERSION LESS 3) OR (CMAKE_VERSION VERSION_LESS "3.10"))
+  message(FATAL_ERROR "CMake >= 3.10 is required")
 endif()
 
 if (NOT OPENSSL_FOUND)
@@ -7,7 +7,7 @@ if (NOT OPENSSL_FOUND)
   find_package(ZLIB REQUIRED)
 endif()
 
-#TODO: all benchmarks in one file
+# TODO: all benchmarks in one file
 add_executable(bench_crypto bench_crypto.cpp)
 target_link_libraries(bench_crypto PRIVATE tdutils ${OPENSSL_CRYPTO_LIBRARY} ${CMAKE_DL_LIBS} ${ZLIB_LIBRARIES})
 if (WIN32)
@@ -38,7 +38,7 @@ add_executable(bench_http_reader bench_http_reader.cpp)
 target_link_libraries(bench_http_reader PRIVATE tdnet tdutils)
 
 add_executable(bench_handshake bench_handshake.cpp)
-target_link_libraries(bench_handshake PRIVATE tdcore tdutils)
+target_link_libraries(bench_handshake PRIVATE tdmtproto tdutils)
 
 add_executable(bench_db bench_db.cpp)
 target_link_libraries(bench_db PRIVATE tdactor tddb tdutils)
@@ -71,4 +71,23 @@ if (NOT WIN32 AND NOT CYGWIN)
   set_source_files_properties(bench_queue.cpp PROPERTIES COMPILE_FLAGS -Wno-deprecated-declarations)
   add_executable(bench_queue bench_queue.cpp)
   target_link_libraries(bench_queue PRIVATE tdutils)
+endif()
+
+if (TD_TEST_FOLLY AND TD_WITH_ABSEIL)
+  find_package(ABSL QUIET)
+  find_package(folly QUIET)
+  find_package(gflags QUIET)
+
+  if (ABSL_FOUND AND folly_FOUND)
+    add_executable(memory-hashset-memprof EXCLUDE_FROM_ALL hashset_memory.cpp)
+    target_compile_definitions(memory-hashset-memprof PRIVATE USE_MEMPROF=1)
+    target_link_libraries(memory-hashset-memprof PRIVATE tdutils memprof_stat Folly::folly absl::flat_hash_map absl::hash)
+
+    add_executable(memory-hashset-os hashset_memory.cpp)
+    target_compile_definitions(memory-hashset-os PRIVATE USE_MEMPROF=0)
+    target_link_libraries(memory-hashset-os PRIVATE tdutils Folly::folly absl::flat_hash_map absl::hash)
+
+    add_executable(hashmap-build hashmap_build.cpp)
+    target_link_libraries(hashmap-build PRIVATE tdutils Folly::folly absl::flat_hash_map absl::hash)
+  endif()
 endif()

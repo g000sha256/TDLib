@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -11,15 +11,17 @@
 #include "td/db/binlog/BinlogHelper.h"
 #include "td/db/binlog/BinlogInterface.h"
 
+#include "td/utils/FlatHashMap.h"
+#include "td/utils/logging.h"
 #include "td/utils/misc.h"
 #include "td/utils/Random.h"
 #include "td/utils/StorerBase.h"
+#include "td/utils/Time.h"
 #include "td/utils/tl_helpers.h"
 #include "td/utils/tl_parsers.h"
 #include "td/utils/tl_storers.h"
 
 #include <set>
-#include <unordered_map>
 
 namespace td {
 
@@ -82,8 +84,8 @@ bool EventId::is_valid_id(int32 id) {
 
 class TQueueImpl final : public TQueue {
   static constexpr size_t MAX_EVENT_LENGTH = 65536 * 8;
-  static constexpr size_t MAX_QUEUE_EVENTS = 1000000;
-  static constexpr size_t MAX_TOTAL_EVENT_LENGTH = 1 << 30;
+  static constexpr size_t MAX_QUEUE_EVENTS = 100000;
+  static constexpr size_t MAX_TOTAL_EVENT_LENGTH = 1 << 27;
 
  public:
   void set_callback(unique_ptr<StorageCallback> callback) final {
@@ -96,7 +98,7 @@ class TQueueImpl final : public TQueue {
   bool do_push(QueueId queue_id, RawEvent &&raw_event) final {
     CHECK(raw_event.event_id.is_valid());
     // raw_event.data can be empty when replaying binlog
-    if (raw_event.data.size() > MAX_EVENT_LENGTH) {
+    if (raw_event.data.size() > MAX_EVENT_LENGTH || queue_id == 0) {
       return false;
     }
     auto &q = queues_[queue_id];
@@ -139,6 +141,9 @@ class TQueueImpl final : public TQueue {
     if (data.size() > MAX_EVENT_LENGTH) {
       return Status::Error("Data is too big");
     }
+    if (queue_id == 0) {
+      return Status::Error("Queue identifier is invalid");
+    }
 
     auto &q = queues_[queue_id];
     if (q.events.size() >= MAX_QUEUE_EVENTS) {
@@ -154,7 +159,9 @@ class TQueueImpl final : public TQueue {
     while (true) {
       if (q.tail_id.empty()) {
         if (hint_new_id.empty()) {
-          q.tail_id = EventId::from_int32(Random::fast(2 * MAX_QUEUE_EVENTS + 1, EventId::MAX_ID / 2)).move_as_ok();
+          q.tail_id = EventId::from_int32(
+                          Random::fast(2 * max(static_cast<int>(MAX_QUEUE_EVENTS), 1000000) + 1, EventId::MAX_ID / 2))
+                          .move_as_ok();
         } else {
           q.tail_id = hint_new_id;
         }
@@ -211,6 +218,80 @@ class TQueueImpl final : public TQueue {
     pop(q, queue_id, it, q.tail_id);
   }
 
+  std::map<EventId, RawEvent> clear(QueueId queue_id, size_t keep_count) final {
+    auto queue_it = queues_.find(queue_id);
+    if (queue_it == queues_.end()) {
+      return {};
+    }
+    auto &q = queue_it->second;
+    auto size = get_size(q);
+    if (size <= keep_count) {
+      return {};
+    }
+
+    auto start_time = Time::now();
+    auto total_event_length = q.total_event_length;
+
+    auto end_it = q.events.end();
+    for (size_t i = 0; i < keep_count; i++) {
+      --end_it;
+    }
+    if (keep_count == 0) {
+      --end_it;
+      auto &event = end_it->second;
+      if (callback_ == nullptr || event.log_event_id == 0) {
+        ++end_it;
+      } else if (!event.data.empty()) {
+        clear_event_data(q, event);
+        callback_->push(queue_id, event);
+      }
+    }
+
+    auto collect_deleted_event_ids_time = 0.0;
+    if (callback_ != nullptr) {
+      vector<uint64> deleted_log_event_ids;
+      deleted_log_event_ids.reserve(size - keep_count);
+      for (auto it = q.events.begin(); it != end_it; ++it) {
+        auto &event = it->second;
+        if (event.log_event_id != 0) {
+          deleted_log_event_ids.push_back(event.log_event_id);
+        }
+      }
+      collect_deleted_event_ids_time = Time::now() - start_time;
+      callback_->pop_batch(std::move(deleted_log_event_ids));
+    }
+    auto callback_clear_time = Time::now() - start_time;
+
+    std::map<EventId, RawEvent> deleted_events;
+    if (keep_count > size / 2) {
+      for (auto it = q.events.begin(); it != end_it;) {
+        q.total_event_length -= it->second.data.size();
+        bool is_inserted = deleted_events.emplace(it->first, std::move(it->second)).second;
+        CHECK(is_inserted);
+        it = q.events.erase(it);
+      }
+    } else {
+      q.total_event_length = 0;
+      for (auto it = end_it; it != q.events.end();) {
+        q.total_event_length += it->second.data.size();
+        bool is_inserted = deleted_events.emplace(it->first, std::move(it->second)).second;
+        CHECK(is_inserted);
+        it = q.events.erase(it);
+      }
+      std::swap(deleted_events, q.events);
+    }
+
+    auto clear_time = Time::now() - start_time;
+    if (clear_time > 0.02) {
+      LOG(WARNING) << "Cleared " << (size - keep_count) << " TQueue events with total size "
+                   << (total_event_length - q.total_event_length) << " in " << clear_time - callback_clear_time
+                   << " seconds, collected their identifiers in " << collect_deleted_event_ids_time
+                   << " seconds, and deleted them from callback in "
+                   << callback_clear_time - collect_deleted_event_ids_time << " seconds";
+    }
+    return deleted_events;
+  }
+
   Result<size_t> get(QueueId queue_id, EventId from_id, bool forget_previous, int32 unix_time_now,
                      MutableSpan<Event> &result_events) final {
     auto it = queues_.find(queue_id);
@@ -231,8 +312,10 @@ class TQueueImpl final : public TQueue {
     return get_size(q);
   }
 
-  int64 run_gc(int32 unix_time_now) final {
+  std::pair<int64, bool> run_gc(int32 unix_time_now) final {
     int64 deleted_events = 0;
+    auto max_finish_time = Time::now() + 0.05;
+    int64 counter = 0;
     while (!queue_gc_at_.empty()) {
       auto it = queue_gc_at_.begin();
       if (it->first >= unix_time_now) {
@@ -244,23 +327,35 @@ class TQueueImpl final : public TQueue {
       int32 new_gc_at = 0;
 
       if (!q.events.empty()) {
-        auto head_id = q.events.begin()->first;
-        Event event;
-        MutableSpan<Event> span{&event, 1};
         size_t size_before = get_size(q);
-        do_get(queue_id, q, head_id, false, unix_time_now, span);
+        for (auto event_it = q.events.begin(); event_it != q.events.end();) {
+          auto &event = event_it->second;
+          if ((++counter & 128) == 0 && Time::now() >= max_finish_time) {
+            if (new_gc_at == 0) {
+              new_gc_at = event.expires_at;
+            }
+            break;
+          }
+          if (event.expires_at < unix_time_now || event.data.empty()) {
+            pop(q, queue_id, event_it, q.tail_id);
+          } else {
+            if (new_gc_at != 0) {
+              break;
+            }
+            new_gc_at = event.expires_at;
+            ++event_it;
+          }
+        }
         size_t size_after = get_size(q);
         CHECK(size_after <= size_before);
         deleted_events += size_before - size_after;
-        if (!span.empty()) {
-          CHECK(!event.data.empty());
-          new_gc_at = event.expires_at;
-          CHECK(new_gc_at >= unix_time_now);
-        }
       }
       schedule_queue_gc(queue_id, q, new_gc_at);
+      if (Time::now() >= max_finish_time) {
+        return {deleted_events, false};
+      }
     }
-    return deleted_events;
+    return {deleted_events, true};
   }
 
   size_t get_size(QueueId queue_id) const final {
@@ -286,7 +381,7 @@ class TQueueImpl final : public TQueue {
     int32 gc_at = 0;
   };
 
-  std::unordered_map<QueueId, Queue> queues_;
+  FlatHashMap<QueueId, Queue> queues_;
   std::set<std::pair<int32, QueueId>> queue_gc_at_;
   unique_ptr<StorageCallback> callback_;
 
@@ -391,7 +486,7 @@ struct TQueueLogEvent final : public Storer {
   int64 extra;
 
   template <class StorerT>
-  void store(StorerT &&storer) const {
+  void store(StorerT &storer) const {
     using td::store;
     store(queue_id, storer);
     store(event_id, storer);
@@ -403,7 +498,7 @@ struct TQueueLogEvent final : public Storer {
   }
 
   template <class ParserT>
-  void parse(ParserT &&parser, int32 has_extra) {
+  void parse(ParserT &parser, int32 has_extra) {
     using td::parse;
     parse(queue_id, parser);
     parse(event_id, parser);
@@ -451,9 +546,14 @@ void TQueueBinlog<BinlogT>::pop(uint64 log_event_id) {
 }
 
 template <class BinlogT>
+void TQueueBinlog<BinlogT>::pop_batch(std::vector<uint64> log_event_ids) {
+  binlog_->erase_batch(std::move(log_event_ids));
+}
+
+template <class BinlogT>
 Status TQueueBinlog<BinlogT>::replay(const BinlogEvent &binlog_event, TQueue &q) const {
   TQueueLogEvent event;
-  TlParser parser(binlog_event.data_);
+  TlParser parser(binlog_event.get_data());
   int32 has_extra = binlog_event.type_ - BINLOG_EVENT_TYPE;
   if (has_extra != 0 && has_extra != 1) {
     return Status::Error("Wrong magic");
@@ -505,4 +605,9 @@ void TQueueMemoryStorage::close(Promise<> promise) {
   promise.set_value({});
 }
 
+void TQueue::StorageCallback::pop_batch(std::vector<uint64> log_event_ids) {
+  for (auto id : log_event_ids) {
+    pop(id);
+  }
+}
 }  // namespace td

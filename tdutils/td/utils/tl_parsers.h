@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -8,19 +8,13 @@
 
 #include "td/utils/buffer.h"
 #include "td/utils/common.h"
-#include "td/utils/format.h"
-#include "td/utils/logging.h"
 #include "td/utils/Slice.h"
 #include "td/utils/SliceBuilder.h"
 #include "td/utils/Status.h"
 #include "td/utils/UInt.h"
-#include "td/utils/utf8.h"
 
-#include <array>
 #include <cstring>
 #include <limits>
-#include <memory>
-#include <string>
 
 namespace td {
 
@@ -29,19 +23,15 @@ class TlParser {
   size_t data_len = 0;
   size_t left_len = 0;
   size_t error_pos = std::numeric_limits<size_t>::max();
-  std::string error;
+  string error;
 
-  std::unique_ptr<int32[]> data_buf;
-  static constexpr size_t SMALL_DATA_ARRAY_SIZE = 6;
-  std::array<int32, SMALL_DATA_ARRAY_SIZE> small_data_array;
-
-  alignas(4) static const unsigned char empty_data[sizeof(UInt256)];
+  alignas(4) static const unsigned char empty_data[sizeof(UInt512)];
 
  public:
   explicit TlParser(Slice slice);
 
-  TlParser(const TlParser &other) = delete;
-  TlParser &operator=(const TlParser &other) = delete;
+  TlParser(const TlParser &) = delete;
+  TlParser &operator=(const TlParser &) = delete;
 
   void set_error(const string &error_message);
 
@@ -207,19 +197,11 @@ class TlBufferParser : public TlParser {
         c = ' ';
       }
     }
-    if (check_utf8(result)) {
+    if (is_valid_utf8(result)) {
       return result;
     }
-    CHECK(!result.empty());
-    LOG(WARNING) << "Wrong UTF-8 string [[" << result << "]] in " << format::as_hex_dump<4>(parent_->as_slice());
-
-    // trying to remove last character
-    size_t new_size = result.size() - 1;
-    while (new_size != 0 && !is_utf8_character_first_code_unit(static_cast<unsigned char>(result[new_size]))) {
-      new_size--;
-    }
-    result.resize(new_size);
-    if (check_utf8(result)) {
+    result.resize(last_utf8_character_position(result));
+    if (is_valid_utf8(result)) {
       return result;
     }
 
@@ -235,6 +217,10 @@ class TlBufferParser : public TlParser {
   const BufferSlice *parent_;
 
   BufferSlice as_buffer_slice(Slice slice);
+
+  bool is_valid_utf8(CSlice str) const;
+
+  static size_t last_utf8_character_position(Slice str);
 };
 
 template <>

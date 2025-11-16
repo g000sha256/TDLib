@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -13,11 +13,10 @@
 #include "td/telegram/telegram_api.h"
 #include "td/telegram/UserId.h"
 
-#include "td/actor/PromiseFuture.h"
-
 #include "td/utils/buffer.h"
 #include "td/utils/common.h"
 #include "td/utils/format.h"
+#include "td/utils/Promise.h"
 #include "td/utils/SliceBuilder.h"
 #include "td/utils/Status.h"
 #include "td/utils/StorerBase.h"
@@ -160,47 +159,47 @@ struct EncryptedInputFile {
   template <class ParserT>
   void parse(ParserT &parser) {
     using td::parse;
-    int32 got_magic;
+    int32 stored_magic;
 
-    parse(got_magic, parser);
+    parse(stored_magic, parser);
     parse(type, parser);
     parse(id, parser);
     parse(access_hash, parser);
     parse(parts, parser);
     parse(key_fingerprint, parser);
 
-    if (got_magic != MAGIC) {
+    if (stored_magic != MAGIC) {
       parser.set_error("EncryptedInputFile magic mismatch");
       return;
     }
   }
-  static EncryptedInputFile from_input_encrypted_file(const tl_object_ptr<telegram_api::InputEncryptedFile> &from) {
-    if (!from) {
-      return EncryptedInputFile{Empty, 0, 0, 0, 0};
+  static EncryptedInputFile from_input_encrypted_file(
+      const telegram_api::object_ptr<telegram_api::InputEncryptedFile> &from) {
+    if (from == nullptr) {
+      return EncryptedInputFile();
     }
-    return from_input_encrypted_file(*from);
-  }
-  static EncryptedInputFile from_input_encrypted_file(const telegram_api::InputEncryptedFile &from) {
-    switch (from.get_id()) {
+    switch (from->get_id()) {
       case telegram_api::inputEncryptedFileEmpty::ID:
         return EncryptedInputFile{Empty, 0, 0, 0, 0};
       case telegram_api::inputEncryptedFileUploaded::ID: {
-        auto &uploaded = static_cast<const telegram_api::inputEncryptedFileUploaded &>(from);
+        auto &uploaded = static_cast<const telegram_api::inputEncryptedFileUploaded &>(*from);
         return EncryptedInputFile{Uploaded, uploaded.id_, 0, uploaded.parts_, uploaded.key_fingerprint_};
       }
       case telegram_api::inputEncryptedFileBigUploaded::ID: {
-        auto &uploaded = static_cast<const telegram_api::inputEncryptedFileBigUploaded &>(from);
+        auto &uploaded = static_cast<const telegram_api::inputEncryptedFileBigUploaded &>(*from);
         return EncryptedInputFile{BigUploaded, uploaded.id_, 0, uploaded.parts_, uploaded.key_fingerprint_};
       }
       case telegram_api::inputEncryptedFile::ID: {
-        auto &uploaded = static_cast<const telegram_api::inputEncryptedFile &>(from);
+        auto &uploaded = static_cast<const telegram_api::inputEncryptedFile &>(*from);
         return EncryptedInputFile{Location, uploaded.id_, uploaded.access_hash_, 0, 0};
       }
       default:
         UNREACHABLE();
+        return EncryptedInputFile();
     }
   }
-  tl_object_ptr<telegram_api::InputEncryptedFile> as_input_encrypted_file() const {
+
+  telegram_api::object_ptr<telegram_api::InputEncryptedFile> as_input_encrypted_file() const {
     switch (type) {
       case Empty:
         return make_tl_object<telegram_api::inputEncryptedFileEmpty>();
@@ -212,6 +211,7 @@ struct EncryptedInputFile {
         return make_tl_object<telegram_api::inputEncryptedFile>(id, access_hash);
     }
     UNREACHABLE();
+    return nullptr;
   }
 };
 
@@ -220,7 +220,7 @@ inline StringBuilder &operator<<(StringBuilder &sb, const EncryptedInputFile &fi
 }
 
 // LogEvents
-// TODO: Qts and SeqNoState could be just Logevents that are updated during regenerate
+// TODO: QTS and SeqNoState could be just Logevents that are updated during regenerate
 class InboundSecretMessage final : public SecretChatLogEventBase<InboundSecretMessage> {
  public:
   static constexpr Type type = SecretChatEvent::Type::InboundSecretMessage;

@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -24,7 +24,7 @@ class SqliteKeyValueAsync final : public SqliteKeyValueAsyncInterface {
   void set(string key, string value, Promise<Unit> promise) final {
     send_closure_later(impl_, &Impl::set, std::move(key), std::move(value), std::move(promise));
   }
-  void set_all(std::unordered_map<string, string> key_values, Promise<Unit> promise) final {
+  void set_all(FlatHashMap<string, string> key_values, Promise<Unit> promise) final {
     send_closure_later(impl_, &Impl::set_all, std::move(key_values), std::move(promise));
   }
   void erase(string key, Promise<Unit> promise) final {
@@ -51,6 +51,7 @@ class SqliteKeyValueAsync final : public SqliteKeyValueAsyncInterface {
       if (it != buffer_.end()) {
         it->second = std::move(value);
       } else {
+        CHECK(!key.empty());
         buffer_.emplace(std::move(key), std::move(value));
       }
       if (promise) {
@@ -60,7 +61,7 @@ class SqliteKeyValueAsync final : public SqliteKeyValueAsyncInterface {
       do_flush(false /*force*/);
     }
 
-    void set_all(std::unordered_map<string, string> key_values, Promise<Unit> promise) {
+    void set_all(FlatHashMap<string, string> key_values, Promise<Unit> promise) {
       do_flush(true /*force*/);
       kv_->set_all(key_values);
       promise.set_value(Unit());
@@ -71,6 +72,7 @@ class SqliteKeyValueAsync final : public SqliteKeyValueAsyncInterface {
       if (it != buffer_.end()) {
         it->second = optional<string>();
       } else {
+        CHECK(!key.empty());
         buffer_.emplace(std::move(key), optional<string>());
       }
       if (promise) {
@@ -106,10 +108,10 @@ class SqliteKeyValueAsync final : public SqliteKeyValueAsyncInterface {
     std::shared_ptr<SqliteKeyValueSafe> kv_safe_;
     SqliteKeyValue *kv_ = nullptr;
 
-    static constexpr double MAX_PENDING_QUERIES_DELAY = 0.01;
-    static constexpr size_t MAX_PENDING_QUERIES_COUNT = 100;
-    std::unordered_map<string, optional<string>> buffer_;
-    std::vector<Promise<Unit>> buffer_promises_;
+    static constexpr double MAX_PENDING_QUERY_DELAY = 0.01;
+    static constexpr size_t MAX_PENDING_QUERY_COUNT = 100;
+    FlatHashMap<string, optional<string>> buffer_;
+    vector<Promise<Unit>> buffer_promises_;
     size_t cnt_ = 0;
 
     double wakeup_at_ = 0;
@@ -121,9 +123,9 @@ class SqliteKeyValueAsync final : public SqliteKeyValueAsyncInterface {
       if (!force) {
         auto now = Time::now_cached();
         if (wakeup_at_ == 0) {
-          wakeup_at_ = now + MAX_PENDING_QUERIES_DELAY;
+          wakeup_at_ = now + MAX_PENDING_QUERY_DELAY;
         }
-        if (now < wakeup_at_ && cnt_ < MAX_PENDING_QUERIES_COUNT) {
+        if (now < wakeup_at_ && cnt_ < MAX_PENDING_QUERY_COUNT) {
           set_timeout_at(wakeup_at_);
           return;
         }
@@ -142,10 +144,7 @@ class SqliteKeyValueAsync final : public SqliteKeyValueAsyncInterface {
       }
       kv_->commit_transaction().ensure();
       buffer_.clear();
-      for (auto &promise : buffer_promises_) {
-        promise.set_value(Unit());
-      }
-      buffer_promises_.clear();
+      set_promises(buffer_promises_);
     }
 
     void timeout_expired() final {

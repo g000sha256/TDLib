@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -28,10 +28,10 @@ class BigNumContext::Impl {
   Impl() : big_num_context(BN_CTX_new()) {
     LOG_IF(FATAL, big_num_context == nullptr);
   }
-  Impl(const Impl &other) = delete;
-  Impl &operator=(const Impl &other) = delete;
-  Impl(Impl &&other) = delete;
-  Impl &operator=(Impl &&other) = delete;
+  Impl(const Impl &) = delete;
+  Impl &operator=(const Impl &) = delete;
+  Impl(Impl &&) = delete;
+  Impl &operator=(Impl &&) = delete;
   ~Impl() {
     BN_CTX_free(big_num_context);
   }
@@ -40,8 +40,8 @@ class BigNumContext::Impl {
 BigNumContext::BigNumContext() : impl_(make_unique<Impl>()) {
 }
 
-BigNumContext::BigNumContext(BigNumContext &&other) noexcept = default;
-BigNumContext &BigNumContext::operator=(BigNumContext &&other) noexcept = default;
+BigNumContext::BigNumContext(BigNumContext &&) noexcept = default;
+BigNumContext &BigNumContext::operator=(BigNumContext &&) noexcept = default;
 BigNumContext::~BigNumContext() = default;
 
 class BigNum::Impl {
@@ -53,10 +53,10 @@ class BigNum::Impl {
   explicit Impl(BIGNUM *big_num) : big_num(big_num) {
     LOG_IF(FATAL, big_num == nullptr);
   }
-  Impl(const Impl &other) = delete;
-  Impl &operator=(const Impl &other) = delete;
-  Impl(Impl &&other) = delete;
-  Impl &operator=(Impl &&other) = delete;
+  Impl(const Impl &) = delete;
+  Impl &operator=(const Impl &) = delete;
+  Impl(Impl &&) = delete;
+  Impl &operator=(Impl &&) = delete;
   ~Impl() {
     BN_clear_free(big_num);
   }
@@ -80,8 +80,8 @@ BigNum &BigNum::operator=(const BigNum &other) {
   return *this;
 }
 
-BigNum::BigNum(BigNum &&other) noexcept = default;
-BigNum &BigNum::operator=(BigNum &&other) noexcept = default;
+BigNum::BigNum(BigNum &&) noexcept = default;
+BigNum &BigNum::operator=(BigNum &&) noexcept = default;
 BigNum::~BigNum() = default;
 
 BigNum BigNum::from_binary(Slice str) {
@@ -281,21 +281,29 @@ void BigNum::mod_mul(BigNum &r, BigNum &a, BigNum &b, const BigNum &m, BigNumCon
   LOG_IF(FATAL, result != 1);
 }
 
-void BigNum::mod_inverse(BigNum &r, BigNum &a, const BigNum &m, BigNumContext &context) {
-  auto result = BN_mod_inverse(r.impl_->big_num, a.impl_->big_num, m.impl_->big_num, context.impl_->big_num_context);
-  LOG_IF(FATAL, result != r.impl_->big_num);
+Result<BigNum> BigNum::mod_inverse(BigNum &a, const BigNum &m, BigNumContext &context) {
+  BigNum r;
+  auto *result = BN_mod_inverse(r.impl_->big_num, a.impl_->big_num, m.impl_->big_num, context.impl_->big_num_context);
+  if (result != r.impl_->big_num) {
+    CHECK(result == nullptr);
+    return Status::Error("Failed to compute modulo inverse");
+  }
+  return std::move(r);
 }
 
-void BigNum::div(BigNum *quotient, BigNum *remainder, const BigNum &dividend, const BigNum &divisor,
-                 BigNumContext &context) {
+Status BigNum::div(BigNum *quotient, BigNum *remainder, const BigNum &dividend, const BigNum &divisor,
+                   BigNumContext &context) {
   auto q = quotient == nullptr ? nullptr : quotient->impl_->big_num;
   auto r = remainder == nullptr ? nullptr : remainder->impl_->big_num;
   if (q == nullptr && r == nullptr) {
-    return;
+    return Status::OK();
   }
 
   auto result = BN_div(q, r, dividend.impl_->big_num, divisor.impl_->big_num, context.impl_->big_num_context);
-  LOG_IF(FATAL, result != 1);
+  if (result != 1) {
+    return Status::Error("Failed to compute quotient");
+  }
+  return Status::OK();
 }
 
 void BigNum::mod_exp(BigNum &r, const BigNum &a, const BigNum &p, const BigNum &m, BigNumContext &context) {

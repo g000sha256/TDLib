@@ -1,12 +1,11 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #include "td/telegram/net/NetStatsManager.h"
 
-#include "td/telegram/ConfigShared.h"
 #include "td/telegram/Global.h"
 #include "td/telegram/logevent/LogEvent.h"
 #include "td/telegram/StateManager.h"
@@ -147,7 +146,7 @@ void NetStatsManager::reset_network_stats() {
     for (size_t net_type_i = 0; net_type_i < net_type_size(); net_type_i++) {
       auto net_type = NetType(net_type_i);
       info.stats_by_type[net_type_i] = NetStatsInfo::TypeStats{};
-      auto key = PSTRING() << info.key << "#" << net_type_string(net_type);
+      auto key = PSTRING() << info.key << '#' << net_type_string(net_type);
       G()->td_db()->get_binlog_pmc()->erase(key);
     }
   };
@@ -198,7 +197,7 @@ void NetStatsManager::start_up() {
 
     for (size_t net_type_i = 0; net_type_i < net_type_size(); net_type_i++) {
       auto net_type = NetType(net_type_i);
-      auto key = PSTRING() << info.key << "#" << net_type_string(net_type);
+      auto key = PSTRING() << info.key << '#' << net_type_string(net_type);
 
       auto value = G()->td_db()->get_binlog_pmc()->get(key);
       if (value.empty()) {
@@ -213,7 +212,7 @@ void NetStatsManager::start_up() {
   auto since_str = G()->td_db()->get_binlog_pmc()->get("net_stats_since");
   if (!since_str.empty()) {
     auto since = to_integer<int32>(since_str);
-    auto authorization_date = G()->shared_config().get_option_integer("authorization_date");
+    auto authorization_date = G()->get_option_integer("authorization_date");
     if (unix_time < since) {
       since_total_ = unix_time;
       G()->td_db()->get_binlog_pmc()->set("net_stats_since", to_string(since_total_));
@@ -290,16 +289,16 @@ void NetStatsManager::update(NetStatsInfo &info, bool force_save) {
 }
 
 void NetStatsManager::save_stats(NetStatsInfo &info, NetType net_type) {
-  if (G()->shared_config().get_option_boolean("disable_persistent_network_statistics")) {
+  if (G()->get_option_boolean("disable_persistent_network_statistics")) {
     return;
   }
 
   auto net_type_i = static_cast<size_t>(net_type);
   auto &type_stats = info.stats_by_type[net_type_i];
 
-  auto key = PSTRING() << info.key << "#" << net_type_string(info.net_type);
+  auto key = PSTRING() << info.key << '#' << net_type_string(info.net_type);
   auto stats = type_stats.mem_stats + type_stats.db_stats;
-  // LOG(ERROR) << "SAVE " << key << " " << stats;
+  // LOG(ERROR) << "SAVE " << key << ' ' << stats;
 
   G()->td_db()->get_binlog_pmc()->set(key, log_event_store(stats).as_slice().str());
 }

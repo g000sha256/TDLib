@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -9,8 +9,7 @@
 #include "td/telegram/telegram_api.h"
 
 #include "td/utils/common.h"
-
-#include <functional>
+#include "td/utils/HashTableUtils.h"
 
 namespace td {
 
@@ -28,6 +27,18 @@ class SpecialStickerSetType {
   static SpecialStickerSetType animated_emoji_click();
 
   static SpecialStickerSetType animated_dice(const string &emoji);
+
+  static SpecialStickerSetType premium_gifts();
+
+  static SpecialStickerSetType generic_animations();
+
+  static SpecialStickerSetType default_statuses();
+
+  static SpecialStickerSetType default_channel_statuses();
+
+  static SpecialStickerSetType default_topic_icons();
+
+  static SpecialStickerSetType ton_gifts();
 
   string get_dice_emoji() const;
 
@@ -51,8 +62,8 @@ inline bool operator!=(const SpecialStickerSetType &lhs, const SpecialStickerSet
 }
 
 struct SpecialStickerSetTypeHash {
-  std::size_t operator()(SpecialStickerSetType type) const {
-    return std::hash<string>()(type.type_);
+  uint32 operator()(SpecialStickerSetType type) const {
+    return Hash<string>()(type.type_);
   }
 };
 

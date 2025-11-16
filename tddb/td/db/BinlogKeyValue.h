@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2021
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -11,19 +11,22 @@
 #include "td/db/DbKey.h"
 #include "td/db/KeyValueSyncInterface.h"
 
-#include "td/actor/PromiseFuture.h"
-
 #include "td/utils/buffer.h"
 #include "td/utils/common.h"
+#include "td/utils/FlatHashMap.h"
+#include "td/utils/HashTableUtils.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
 #include "td/utils/port/RwMutex.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
 #include "td/utils/StorerBase.h"
 #include "td/utils/tl_parsers.h"
 #include "td/utils/tl_storers.h"
+#include "td/utils/WaitFreeHashMap.h"
 
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <utility>
@@ -42,13 +45,13 @@ class BinlogKeyValue final : public KeyValueSyncInterface {
     Slice key;
     Slice value;
     template <class StorerT>
-    void store(StorerT &&storer) const {
+    void store(StorerT &storer) const {
       storer.store_string(key);
       storer.store_string(value);
     }
 
     template <class ParserT>
-    void parse(ParserT &&parser) {
+    void parse(ParserT &parser) {
       key = parser.template fetch_string<Slice>();
       value = parser.template fetch_string<Slice>();
     }
@@ -81,8 +84,15 @@ class BinlogKeyValue final : public KeyValueSyncInterface {
         name,
         [&](const BinlogEvent &binlog_event) {
           Event event;
-          event.parse(TlParser(binlog_event.data_));
-          map_.emplace(event.key.str(), std::make_pair(event.value.str(), binlog_event.id_));
+          TlParser event_parser(binlog_event.get_data());
+          event.parse(event_parser);
+          event_parser.fetch_end();
+          LOG_CHECK(event_parser.get_error() == nullptr) << event_parser.get_status();
+          if (event.key.empty()) {
+            LOG(ERROR) << "Have event with empty key";
+            return;
+          }
+          map_.set(event.key.str(), std::make_pair(event.value.str(), binlog_event.id_));
         },
         std::move(db_key), DbKey::empty(), scheduler_id));
     return Status::OK();
@@ -102,8 +112,15 @@ class BinlogKeyValue final : public KeyValueSyncInterface {
 
   void external_init_handle(const BinlogEvent &binlog_event) {
     Event event;
-    event.parse(TlParser(binlog_event.data_));
-    map_.emplace(event.key.str(), std::make_pair(event.value.str(), binlog_event.id_));
+    TlParser event_parser(binlog_event.get_data());
+    event.parse(event_parser);
+    event_parser.fetch_end();
+    LOG_CHECK(event_parser.get_error() == nullptr) << event_parser.get_status();
+    if (event.key.empty()) {
+      LOG(ERROR) << "Have external event with empty key";
+      return;
+    }
+    map_.set(event.key.str(), std::make_pair(event.value.str(), binlog_event.id_));
   }
 
   void external_init_finish(std::shared_ptr<BinlogT> binlog) {
@@ -118,51 +135,61 @@ class BinlogKeyValue final : public KeyValueSyncInterface {
   }
 
   SeqNo set(string key, string value) final {
-    auto lock = rw_mutex_.lock_write().move_as_ok();
-    uint64 old_id = 0;
-    auto it_ok = map_.insert({key, {value, 0}});
-    if (!it_ok.second) {
-      if (it_ok.first->second.first == value) {
-        return 0;
-      }
-      VLOG(binlog) << "Change value of key " << key << " from " << hex_encode(it_ok.first->second.first) << " to "
-                   << hex_encode(value);
-      old_id = it_ok.first->second.second;
-      it_ok.first->second.first = value;
+    auto lock = rw_mutex_.lock_write();
+    CHECK(!key.empty());
+    auto &it = map_[key];
+    if (it.second != 0 && it.first == value) {
+      return 0;
+    }
+    auto seq_no = binlog_->next_event_id();
+    bool rewrite = false;
+    if (it.second != 0) {
+      VLOG(binlog) << "Change value of key " << key << " from " << hex_encode(it.first) << " to " << hex_encode(value);
+      rewrite = true;
     } else {
       VLOG(binlog) << "Set value of key " << key << " to " << hex_encode(value);
+      it.second = seq_no;
     }
-    bool rewrite = false;
-    uint64 id;
-    auto seq_no = binlog_->next_id();
-    if (old_id != 0) {
-      rewrite = true;
-      id = old_id;
-    } else {
-      id = seq_no;
-      it_ok.first->second.second = id;
-    }
+    it.first = value;
+    auto event_id = it.second;
 
     lock.reset();
     add_event(seq_no,
-              BinlogEvent::create_raw(id, magic_, rewrite ? BinlogEvent::Flags::Rewrite : 0, Event{key, value}));
+              BinlogEvent::create_raw(event_id, magic_, rewrite ? BinlogEvent::Flags::Rewrite : 0, Event{key, value}));
     return seq_no;
   }
 
   SeqNo erase(const string &key) final {
-    auto lock = rw_mutex_.lock_write().move_as_ok();
-    auto it = map_.find(key);
-    if (it == map_.end()) {
+    auto lock = rw_mutex_.lock_write();
+    if (map_.count(key) == 0) {
       return 0;
     }
-    VLOG(binlog) << "Remove value of key " << key << ", which is " << hex_encode(it->second.first);
-    uint64 id = it->second.second;
-    map_.erase(it);
-    auto seq_no = binlog_->next_id();
+    auto &value = map_[key];
+    VLOG(binlog) << "Remove value of key " << key << ", which is " << hex_encode(value.first);
+    uint64 event_id = value.second;
+    map_.erase(key);
+    auto seq_no = binlog_->next_event_id();
     lock.reset();
-    add_event(seq_no, BinlogEvent::create_raw(id, BinlogEvent::ServiceTypes::Empty, BinlogEvent::Flags::Rewrite,
+    add_event(seq_no, BinlogEvent::create_raw(event_id, BinlogEvent::ServiceTypes::Empty, BinlogEvent::Flags::Rewrite,
                                               EmptyStorer()));
     return seq_no;
+  }
+
+  SeqNo erase_batch(vector<string> keys) final {
+    auto lock = rw_mutex_.lock_write();
+    vector<uint64> log_event_ids;
+    for (const auto &key : keys) {
+      if (map_.count(key) != 0) {
+        auto &value = map_[key];
+        log_event_ids.push_back(value.second);
+        map_.erase(key);
+      }
+    }
+    if (log_event_ids.empty()) {
+      return 0;
+    }
+    VLOG(binlog) << "Remove value of keys " << keys;
+    return binlog_->erase_batch(std::move(log_event_ids));
   }
 
   void add_event(uint64 seq_no, BufferSlice &&event) {
@@ -170,67 +197,66 @@ class BinlogKeyValue final : public KeyValueSyncInterface {
   }
 
   bool isset(const string &key) final {
-    auto lock = rw_mutex_.lock_read().move_as_ok();
+    auto lock = rw_mutex_.lock_read();
     return map_.count(key) > 0;
   }
 
   string get(const string &key) final {
-    auto lock = rw_mutex_.lock_read().move_as_ok();
-    auto it = map_.find(key);
-    if (it == map_.end()) {
-      return string();
-    }
-    VLOG(binlog) << "Get value of key " << key << ", which is " << hex_encode(it->second.first);
-    return it->second.first;
+    auto lock = rw_mutex_.lock_read();
+    return map_.get(key).first;
   }
 
-  void force_sync(Promise<> &&promise) final {
-    binlog_->force_sync(std::move(promise));
+  void force_sync(Promise<> &&promise, const char *source) final {
+    binlog_->force_sync(std::move(promise), source);
   }
 
   void lazy_sync(Promise<> &&promise) {
     binlog_->lazy_sync(std::move(promise));
   }
 
-  std::unordered_map<string, string> prefix_get(Slice prefix) final {
-    auto lock = rw_mutex_.lock_write().move_as_ok();
-    std::unordered_map<string, string> res;
-    for (const auto &kv : map_) {
-      if (begins_with(kv.first, prefix)) {
-        res[kv.first.substr(prefix.size())] = kv.second.first;
+  void for_each(std::function<void(Slice, Slice)> func) final {
+    auto lock = rw_mutex_.lock_write();
+    map_.foreach([&func](const string &key, const std::pair<string, uint64> &value) { func(key, value.first); });
+  }
+
+  std::unordered_map<string, string, Hash<string>> prefix_get(Slice prefix) final {
+    auto lock = rw_mutex_.lock_write();
+    std::unordered_map<string, string, Hash<string>> res;
+    map_.foreach([&res, prefix](const string &key, const std::pair<string, uint64> &value) {
+      if (begins_with(key, prefix)) {
+        res.emplace(key.substr(prefix.size()), value.first);
       }
-    }
+    });
     return res;
   }
 
-  std::unordered_map<string, string> get_all() final {
-    auto lock = rw_mutex_.lock_write().move_as_ok();
-    std::unordered_map<string, string> res;
-    for (const auto &kv : map_) {
-      res[kv.first] = kv.second.first;
-    }
+  FlatHashMap<string, string> get_all() final {
+    auto lock = rw_mutex_.lock_write();
+    FlatHashMap<string, string> res;
+    res.reserve(map_.calc_size());
+    map_.foreach([&res](const string &key, const std::pair<string, uint64> &value) { res.emplace(key, value.first); });
     return res;
   }
 
   void erase_by_prefix(Slice prefix) final {
-    auto lock = rw_mutex_.lock_write().move_as_ok();
-    std::vector<uint64> ids;
-    for (auto it = map_.begin(); it != map_.end();) {
-      if (begins_with(it->first, prefix)) {
-        ids.push_back(it->second.second);
-        it = map_.erase(it);
-      } else {
-        ++it;
+    auto lock = rw_mutex_.lock_write();
+    vector<uint64> event_ids;
+    map_.remove_if([&event_ids, prefix](const auto &it) {
+      if (begins_with(it.first, prefix)) {
+        event_ids.push_back(it.second.second);
+        return true;
       }
-    }
-    auto seq_no = binlog_->next_id(narrow_cast<int32>(ids.size()));
+      return false;
+    });
+    auto seq_no = binlog_->next_event_id(narrow_cast<int32>(event_ids.size()));
     lock.reset();
-    for (auto id : ids) {
-      add_event(seq_no, BinlogEvent::create_raw(id, BinlogEvent::ServiceTypes::Empty, BinlogEvent::Flags::Rewrite,
+    for (auto event_id : event_ids) {
+      add_event(seq_no, BinlogEvent::create_raw(event_id, BinlogEvent::ServiceTypes::Empty, BinlogEvent::Flags::Rewrite,
                                                 EmptyStorer()));
       seq_no++;
     }
   }
+
   template <class T>
   friend class BinlogKeyValue;
 
@@ -239,7 +265,7 @@ class BinlogKeyValue final : public KeyValueSyncInterface {
   }
 
  private:
-  std::unordered_map<string, std::pair<string, uint64>> map_;
+  WaitFreeHashMap<string, std::pair<string, uint64>> map_;
   std::shared_ptr<BinlogT> binlog_;
   RwMutex rw_mutex_;
   int32 magic_ = MAGIC;
@@ -251,14 +277,14 @@ inline void BinlogKeyValue<Binlog>::add_event(uint64 seq_no, BufferSlice &&event
 }
 
 template <>
-inline void BinlogKeyValue<Binlog>::force_sync(Promise<> &&promise) {
-  binlog_->sync();
+inline void BinlogKeyValue<Binlog>::force_sync(Promise<> &&promise, const char *source) {
+  binlog_->sync(source);
   promise.set_value(Unit());
 }
 
 template <>
 inline void BinlogKeyValue<Binlog>::lazy_sync(Promise<> &&promise) {
-  force_sync(std::move(promise));
+  force_sync(std::move(promise), "lazy_sync");
 }
 
 }  // namespace td

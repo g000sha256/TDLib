@@ -1,4 +1,4 @@
-# - Configures C++14 compiler, setting TDLib-specific compilation options.
+# Configures C++17 compiler, setting TDLib-specific compilation options.
 
 function(td_set_up_compiler)
   set(CMAKE_EXPORT_COMPILE_COMMANDS 1 PARENT_SCOPE)
@@ -24,22 +24,23 @@ function(td_set_up_compiler)
 
   if (GCC OR CLANG OR INTEL)
     if (WIN32 AND INTEL)
-      set(STD14_FLAG /Qstd=c++14)
+      set(STD17_FLAG /Qstd=c++17)
     else()
-      set(STD14_FLAG -std=c++14)
+      set(STD17_FLAG -std=c++17)
     endif()
-    check_cxx_compiler_flag(${STD14_FLAG} HAVE_STD14)
-    if (NOT HAVE_STD14)
-      string(REPLACE "c++14" "c++1y" STD14_FLAG "${STD14_FLAG}")
-      check_cxx_compiler_flag(${STD14_FLAG} HAVE_STD1Y)
-      set(HAVE_STD14 ${HAVE_STD1Y})
+    if (GCC AND (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 7.0))
+      message(FATAL_ERROR "No C++17 support in the compiler. Please upgrade the compiler to at least GCC 7.0.")
     endif()
+    if (CLANG AND (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 5.0))
+      message(FATAL_ERROR "No C++17 support in the compiler. Please upgrade the compiler to at least clang 5.0.")
+    endif()
+    check_cxx_compiler_flag(${STD17_FLAG} HAVE_STD17)
   elseif (MSVC)
-    set(HAVE_STD14 MSVC_VERSION>=1900)
+    set(HAVE_STD17 MSVC_VERSION>=1914) # MSVC 2017 version 15.7
   endif()
 
-  if (NOT HAVE_STD14)
-    message(FATAL_ERROR "No C++14 support in the compiler. Please upgrade the compiler.")
+  if (NOT HAVE_STD17)
+    message(FATAL_ERROR "No C++17 support in the compiler. Please upgrade the compiler.")
   endif()
 
   if (MSVC)
@@ -47,9 +48,9 @@ function(td_set_up_compiler)
       string(REPLACE "/RTC1" " " CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
     endif()
     add_definitions(-D_SCL_SECURE_NO_WARNINGS -D_CRT_SECURE_NO_WARNINGS)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /utf-8 /GR- /W4 /wd4100 /wd4127 /wd4324 /wd4505 /wd4814 /wd4702 /bigobj")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++17 /utf-8 /GR- /W4 /wd4100 /wd4127 /wd4324 /wd4505 /wd4814 /wd4702 /bigobj")
   elseif (CLANG OR GCC)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${STD14_FLAG} -fno-omit-frame-pointer -fno-exceptions -fno-rtti")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${STD17_FLAG} -fno-omit-frame-pointer -fno-exceptions -fno-rtti")
     if (APPLE)
       set(TD_LINKER_FLAGS "-Wl,-dead_strip")
       if (NOT CMAKE_BUILD_TYPE MATCHES "Deb")
@@ -62,6 +63,12 @@ function(td_set_up_compiler)
         set(TD_LINKER_FLAGS "-Wl,-z,ignore")
       elseif (EMSCRIPTEN)
         set(TD_LINKER_FLAGS "-Wl,--gc-sections")
+      elseif (ANDROID)
+        set(TD_LINKER_FLAGS "-Wl,--gc-sections -Wl,--exclude-libs,ALL -Wl,--icf=safe")
+        if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+          # Enable 16 KB ELF alignment
+          set(TD_LINKER_FLAGS "${TD_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
+        endif()
       else()
         set(TD_LINKER_FLAGS "-Wl,--gc-sections -Wl,--exclude-libs,ALL")
       endif()
@@ -75,7 +82,7 @@ function(td_set_up_compiler)
       endif()
     endif()
   elseif (INTEL)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${STD14_FLAG}")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${STD17_FLAG}")
   endif()
 
   if (WIN32)
@@ -85,9 +92,11 @@ function(td_set_up_compiler)
     add_definitions(-D_DEFAULT_SOURCE=1 -DFD_SETSIZE=4096)
   endif()
 
-  if (NOT ANDROID) # _FILE_OFFSET_BITS is broken in NDK r15, r15b and r17 and doesn't work prior to Android 7.0
-    add_definitions(-D_FILE_OFFSET_BITS=64)
-  endif()
+  # _FILE_OFFSET_BITS is broken in Android NDK r15, r15b and r17 and doesn't work prior to Android 7.0
+  add_definitions(-D_FILE_OFFSET_BITS=64)
+
+  # _GNU_SOURCE might not be defined by g++
+  add_definitions(-D_GNU_SOURCE)
 
   if (CMAKE_SYSTEM_NAME STREQUAL "SunOS")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lsocket -lnsl")
@@ -115,12 +124,16 @@ function(td_set_up_compiler)
     add_cxx_compiler_flag("-Wno-unused-parameter")
     add_cxx_compiler_flag("-Wconversion")
     add_cxx_compiler_flag("-Wno-sign-conversion")
-    add_cxx_compiler_flag("-Wc++14-compat-pedantic")
+    add_cxx_compiler_flag("-Wc++17-compat-pedantic")
     add_cxx_compiler_flag("-Wdeprecated")
     add_cxx_compiler_flag("-Wno-unused-command-line-argument")
     add_cxx_compiler_flag("-Qunused-arguments")
+    add_cxx_compiler_flag("-Wno-unknown-warning-option")
     add_cxx_compiler_flag("-Wodr")
     add_cxx_compiler_flag("-flto-odr-type-merging")
+    add_cxx_compiler_flag("-Wno-psabi")
+    add_cxx_compiler_flag("-Wunused-member-function")
+    add_cxx_compiler_flag("-Wunused-private-field")
 
   #  add_cxx_compiler_flag("-Werror")
 
@@ -133,8 +146,8 @@ function(td_set_up_compiler)
   #  add_cxx_compiler_flag("-Wzero-as-null-pointer-constant")
   endif()
 
-  if (GCC AND NOT (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 7.0))
-    add_cxx_compiler_flag("-Wno-maybe-uninitialized")  # too much false positives
+  if (GCC)
+    add_cxx_compiler_flag("-Wno-maybe-uninitialized")  # too many false positives
   endif()
   if (WIN32 AND GCC AND NOT (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 8.0))
     # warns about casts of function pointers returned by GetProcAddress
@@ -145,9 +158,21 @@ function(td_set_up_compiler)
     # see http://www.open-std.org/jtc1/sc22/wg21/docs/cwg_defects.html#1579
     add_cxx_compiler_flag("-Wno-redundant-move")
   endif()
+  if (GCC)
+    add_cxx_compiler_flag("-Wno-stringop-overflow")  # some false positives
+  endif()
   if (CLANG AND (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 3.5))
     # https://stackoverflow.com/questions/26744556/warning-returning-a-captured-reference-from-a-lambda
     add_cxx_compiler_flag("-Wno-return-stack-address")
+  endif()
+  if (GCC AND (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13.0))
+    # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=104030
+    add_cxx_compiler_flag("-Wbidi-chars=none")
+    add_cxx_compiler_flag("-Wno-bidirectional")
+  endif()
+
+  if (MINGW)
+    add_cxx_compiler_flag("-ftrack-macro-expansion=0")
   endif()
 
   #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -isystem /usr/include/c++/v1")
