@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
 
-project(TDLib VERSION 1.8.58 LANGUAGES CXX C)
+project(TDLib VERSION 1.8.59 LANGUAGES CXX C)
 
 if (NOT DEFINED CMAKE_MODULE_PATH)
   set(CMAKE_MODULE_PATH "")
@@ -556,6 +556,7 @@ set(TDLIB_SOURCE_PART2
   td/telegram/OrderInfo.cpp
   td/telegram/Outline.cpp
   td/telegram/PaidReactionType.cpp
+  td/telegram/Passkey.cpp
   td/telegram/PasswordManager.cpp
   td/telegram/Payments.cpp
   td/telegram/PeerColor.cpp
@@ -611,6 +612,7 @@ set(TDLIB_SOURCE_PART2
   td/telegram/StarGift.cpp
   td/telegram/StarGiftAttribute.cpp
   td/telegram/StarGiftAttributeId.cpp
+  td/telegram/StarGiftAuctionRound.cpp
   td/telegram/StarGiftAuctionState.cpp
   td/telegram/StarGiftAuctionUserState.cpp
   td/telegram/StarGiftBackground.cpp
@@ -651,6 +653,7 @@ set(TDLIB_SOURCE_PART2
   td/telegram/TargetDialogTypes.cpp
   td/telegram/Td.cpp
   td/telegram/TdDb.cpp
+  td/telegram/TempPasswordState.cpp
   td/telegram/TermsOfService.cpp
   td/telegram/TermsOfServiceManager.cpp
   td/telegram/ThemeManager.cpp
@@ -948,6 +951,7 @@ set(TDLIB_SOURCE_PART2
   td/telegram/OrderInfo.h
   td/telegram/Outline.h
   td/telegram/PaidReactionType.h
+  td/telegram/Passkey.h
   td/telegram/PasswordManager.h
   td/telegram/Payments.h
   td/telegram/PeerColor.h
@@ -1017,6 +1021,7 @@ set(TDLIB_SOURCE_PART2
   td/telegram/StarGift.h
   td/telegram/StarGiftAttribute.h
   td/telegram/StarGiftAttributeId.h
+  td/telegram/StarGiftAuctionRound.h
   td/telegram/StarGiftAuctionState.h
   td/telegram/StarGiftAuctionUserState.h
   td/telegram/StarGiftBackground.h
@@ -1065,6 +1070,7 @@ set(TDLIB_SOURCE_PART2
   td/telegram/Td.h
   td/telegram/TdCallback.h
   td/telegram/TdDb.h
+  td/telegram/TempPasswordState.h
   td/telegram/TermsOfService.h
   td/telegram/TermsOfServiceManager.h
   td/telegram/ThemeManager.h
@@ -1201,6 +1207,7 @@ set(TDLIB_SOURCE_PART2
   td/telegram/SuggestedAction.hpp
   td/telegram/SuggestedPost.hpp
   td/telegram/SuggestedPostPrice.hpp
+  td/telegram/TempPasswordState.hpp
   td/telegram/TermsOfService.hpp
   td/telegram/ThemeSettings.hpp
   td/telegram/ToDoCompletion.hpp

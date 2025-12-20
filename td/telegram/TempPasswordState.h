@@ -9,12 +9,21 @@
 #include "td/telegram/td_api.h"
 
 #include "td/utils/common.h"
-#include "td/utils/Slice.h"
 
 namespace td {
 
-td_api::object_ptr<td_api::outline> get_outline_object(CSlice path, double zoom, Slice source);
+struct TempPasswordState {
+  bool has_temp_password = false;
+  string temp_password;
+  int32 valid_until = 0;  // unix_time
 
-string get_outline_svg_path(CSlice path, double zoom, Slice source);
+  td_api::object_ptr<td_api::temporaryPasswordState> get_temporary_password_state_object() const;
+
+  template <class StorerT>
+  void store(StorerT &storer) const;
+
+  template <class ParserT>
+  void parse(ParserT &parser);
+};
 
 }  // namespace td
