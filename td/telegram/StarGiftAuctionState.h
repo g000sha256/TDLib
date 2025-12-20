@@ -7,6 +7,7 @@
 #pragma once
 
 #include "td/telegram/AuctionBidLevel.h"
+#include "td/telegram/StarGiftAuctionRound.h"
 #include "td/telegram/td_api.h"
 #include "td/telegram/telegram_api.h"
 #include "td/telegram/UserId.h"
@@ -29,13 +30,18 @@ class StarGiftAuctionState {
   int64 min_bid_amount_ = 0;
   vector<AuctionBidLevel> bid_levels_;
   vector<UserId> top_bidder_user_ids_;
+  vector<StarGiftAuctionRound> rounds_;
   int32 next_round_at_ = 0;
+  int32 last_gift_num_ = 0;
   int32 gifts_left_ = 0;
   int32 current_round_ = 0;
   int32 total_rounds_ = 0;
 
   // finished
   int64 average_price_ = 0;
+  int32 listed_count_ = 0;
+  int32 fragment_listed_count_ = 0;
+  string fragment_listed_url_;
 
   friend bool operator==(const StarGiftAuctionState &lhs, const StarGiftAuctionState &rhs);
 

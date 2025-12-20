@@ -132,6 +132,10 @@ class Requests {
 
   void on_request(uint64 id, const td_api::requestQrCodeAuthentication &request);
 
+  void on_request(uint64 id, const td_api::getAuthenticationPasskeyParameters &request);
+
+  void on_request(uint64 id, td_api::checkAuthenticationPasskey &request);
+
   void on_request(uint64 id, const td_api::resetAuthenticationEmailAddress &request);
 
   void on_request(uint64 id, td_api::checkAuthenticationPassword &request);
@@ -511,6 +515,14 @@ class Requests {
   void on_request(uint64 id, const td_api::getChatMessagePosition &request);
 
   void on_request(uint64 id, const td_api::getChatScheduledMessages &request);
+
+  void on_request(uint64 id, const td_api::getPasskeyParameters &request);
+
+  void on_request(uint64 id, td_api::addLoginPasskey &request);
+
+  void on_request(uint64 id, const td_api::getLoginPasskeys &request);
+
+  void on_request(uint64 id, td_api::removeLoginPasskey &request);
 
   void on_request(uint64 id, const td_api::getEmojiReaction &request);
 
@@ -1412,6 +1424,8 @@ class Requests {
 
   void on_request(uint64 id, const td_api::getStickerOutline &request);
 
+  void on_request(uint64 id, const td_api::getStickerOutlineSvgPath &request);
+
   void on_request(uint64 id, td_api::getStickers &request);
 
   void on_request(uint64 id, td_api::getAllStickerEmojis &request);
@@ -1708,6 +1722,8 @@ class Requests {
 
   void on_request(uint64 id, const td_api::getGiftUpgradePreview &request);
 
+  void on_request(uint64 id, const td_api::getGiftUpgradeVariants &request);
+
   void on_request(uint64 id, td_api::upgradeGift &request);
 
   void on_request(uint64 id, td_api::buyGiftUpgrade &request);
@@ -1718,6 +1734,10 @@ class Requests {
 
   void on_request(uint64 id, td_api::sendResoldGift &request);
 
+  void on_request(uint64 id, td_api::sendGiftPurchaseOffer &request);
+
+  void on_request(uint64 id, const td_api::processGiftPurchaseOffer &request);
+
   void on_request(uint64 id, td_api::getReceivedGifts &request);
 
   void on_request(uint64 id, const td_api::getReceivedGift &request);
@@ -1727,6 +1747,8 @@ class Requests {
   void on_request(uint64 id, td_api::getUpgradedGiftValueInfo &request);
 
   void on_request(uint64 id, const td_api::getUpgradedGiftWithdrawalUrl &request);
+
+  void on_request(uint64 id, const td_api::getUpgradedGiftsPromotionalAnimation &request);
 
   void on_request(uint64 id, td_api::setGiftResalePrice &request);
 

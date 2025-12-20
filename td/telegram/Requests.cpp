@@ -2140,6 +2140,20 @@ void Requests::on_request(uint64 id, const td_api::requestQrCodeAuthentication &
                UserId::get_user_ids(request.other_user_ids_));
 }
 
+void Requests::on_request(uint64 id, const td_api::getAuthenticationPasskeyParameters &request) {
+  // this is a regular request
+  CREATE_TEXT_REQUEST_PROMISE();
+  send_closure(td_->password_manager_, &PasswordManager::get_passkey_login_options, std::move(promise));
+}
+
+void Requests::on_request(uint64 id, td_api::checkAuthenticationPasskey &request) {
+  CLEAN_INPUT_STRING(request.credential_id_);
+  CLEAN_INPUT_STRING(request.client_data_);
+  CLEAN_INPUT_STRING(request.user_handle_);
+  send_closure(td_->auth_manager_actor_, &AuthManager::finish_passkey_login, id, request.credential_id_,
+               request.client_data_, request.authenticator_data_, request.signature_, request.user_handle_);
+}
+
 void Requests::on_request(uint64 id, const td_api::resetAuthenticationEmailAddress &request) {
   send_closure(td_->auth_manager_actor_, &AuthManager::reset_email_address, id);
 }
@@ -3626,6 +3640,34 @@ void Requests::on_request(uint64 id, const td_api::getChatMessagePosition &reque
 void Requests::on_request(uint64 id, const td_api::getChatScheduledMessages &request) {
   CHECK_IS_USER();
   CREATE_REQUEST(GetChatScheduledMessagesRequest, request.chat_id_);
+}
+
+void Requests::on_request(uint64 id, const td_api::getPasskeyParameters &request) {
+  CHECK_IS_USER();
+  CREATE_TEXT_REQUEST_PROMISE();
+  send_closure(td_->password_manager_, &PasswordManager::init_passkey_registration, std::move(promise));
+}
+
+void Requests::on_request(uint64 id, td_api::addLoginPasskey &request) {
+  CHECK_IS_USER();
+  CLEAN_INPUT_STRING(request.client_data_);
+  CREATE_REQUEST_PROMISE();
+  send_closure(td_->password_manager_, &PasswordManager::register_passkey, std::move(request.client_data_),
+               std::move(request.attestation_object_), std::move(promise));
+}
+
+void Requests::on_request(uint64 id, const td_api::getLoginPasskeys &request) {
+  CHECK_IS_USER();
+  CREATE_REQUEST_PROMISE();
+  send_closure(td_->password_manager_, &PasswordManager::get_passkeys, std::move(promise));
+}
+
+void Requests::on_request(uint64 id, td_api::removeLoginPasskey &request) {
+  CHECK_IS_USER();
+  CLEAN_INPUT_STRING(request.passkey_id_);
+  CREATE_OK_REQUEST_PROMISE();
+  send_closure(td_->password_manager_, &PasswordManager::delete_passkey, std::move(request.passkey_id_),
+               std::move(promise));
 }
 
 void Requests::on_request(uint64 id, const td_api::getEmojiReaction &request) {
@@ -6938,6 +6980,13 @@ void Requests::on_request(uint64 id, const td_api::getStickerOutline &request) {
       FileId(request.sticker_file_id_, 0), request.for_animated_emoji_, request.for_clicked_animated_emoji_message_));
 }
 
+void Requests::on_request(uint64 id, const td_api::getStickerOutlineSvgPath &request) {
+  CHECK_IS_USER();
+  CREATE_TEXT_REQUEST_PROMISE();
+  promise.set_value(td_->stickers_manager_->get_sticker_outline_svg_path(
+      FileId(request.sticker_file_id_, 0), request.for_animated_emoji_, request.for_clicked_animated_emoji_message_));
+}
+
 void Requests::on_request(uint64 id, td_api::getStickers &request) {
   CHECK_IS_USER();
   CLEAN_INPUT_STRING(request.query_);
@@ -8001,6 +8050,12 @@ void Requests::on_request(uint64 id, const td_api::getGiftUpgradePreview &reques
   td_->star_gift_manager_->get_gift_upgrade_preview(request.gift_id_, std::move(promise));
 }
 
+void Requests::on_request(uint64 id, const td_api::getGiftUpgradeVariants &request) {
+  CHECK_IS_USER();
+  CREATE_REQUEST_PROMISE();
+  td_->star_gift_manager_->get_gift_upgrade_variants(request.gift_id_, std::move(promise));
+}
+
 void Requests::on_request(uint64 id, td_api::upgradeGift &request) {
   CHECK_IS_USER_OR_BUSINESS();
   CREATE_REQUEST_PROMISE();
@@ -8044,6 +8099,23 @@ void Requests::on_request(uint64 id, td_api::sendResoldGift &request) {
   td_->star_gift_manager_->send_resold_gift(request.gift_name_, owner_dialog_id, std::move(price), std::move(promise));
 }
 
+void Requests::on_request(uint64 id, td_api::sendGiftPurchaseOffer &request) {
+  CHECK_IS_USER();
+  CLEAN_INPUT_STRING(request.gift_name_);
+  CREATE_OK_REQUEST_PROMISE();
+  TRY_RESULT_PROMISE(promise, owner_dialog_id, get_message_sender_dialog_id(td_, request.owner_id_, true, false));
+  TRY_RESULT_PROMISE(promise, price,
+                     StarGiftResalePrice::get_star_gift_resale_price(td_, std::move(request.price_), false));
+  td_->star_gift_manager_->send_gift_offer(owner_dialog_id, request.gift_name_, std::move(price), request.duration_,
+                                           request.paid_message_star_count_, std::move(promise));
+}
+
+void Requests::on_request(uint64 id, const td_api::processGiftPurchaseOffer &request) {
+  CHECK_IS_USER();
+  CREATE_OK_REQUEST_PROMISE();
+  td_->star_gift_manager_->process_gift_offer(MessageId(request.message_id_), !request.approve_, std::move(promise));
+}
+
 void Requests::on_request(uint64 id, td_api::getReceivedGifts &request) {
   CLEAN_INPUT_STRING(request.offset_);
   CREATE_REQUEST_PROMISE();
@@ -8081,6 +8153,12 @@ void Requests::on_request(uint64 id, const td_api::getUpgradedGiftWithdrawalUrl 
   CREATE_HTTP_URL_REQUEST_PROMISE();
   td_->star_gift_manager_->get_star_gift_withdrawal_url(StarGiftId(request.received_gift_id_), request.password_,
                                                         std::move(promise));
+}
+
+void Requests::on_request(uint64 id, const td_api::getUpgradedGiftsPromotionalAnimation &request) {
+  CHECK_IS_USER();
+  CREATE_REQUEST_PROMISE();
+  td_->star_gift_manager_->get_star_gift_promo_animation(std::move(promise));
 }
 
 void Requests::on_request(uint64 id, td_api::setGiftResalePrice &request) {
