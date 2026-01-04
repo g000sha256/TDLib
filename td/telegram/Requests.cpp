@@ -2268,6 +2268,8 @@ void Requests::on_request(uint64 id, const td_api::getCurrentState &request) {
 
     td_->group_call_manager_->get_current_state(updates);
 
+    td_->message_query_manager_->get_current_state(updates);
+
     // TODO updateFileGenerationStart generation_id:int64 original_path:string destination_path:string conversion:string = Update;
     // TODO updateCall call:call = Update;
     // TODO updateGroupCall call:groupCall = Update;
@@ -2800,6 +2802,14 @@ void Requests::on_request(uint64 id, td_api::translateMessageText &request) {
   CREATE_REQUEST_PROMISE();
   td_->messages_manager_->translate_message_text({DialogId(request.chat_id_), MessageId(request.message_id_)},
                                                  request.to_language_code_, std::move(promise));
+}
+
+void Requests::on_request(uint64 id, td_api::summarizeMessage &request) {
+  CHECK_IS_USER();
+  CLEAN_INPUT_STRING(request.translate_to_language_code_);
+  CREATE_REQUEST_PROMISE();
+  td_->message_query_manager_->summarize_message_text({DialogId(request.chat_id_), MessageId(request.message_id_)},
+                                                      request.translate_to_language_code_, std::move(promise));
 }
 
 void Requests::on_request(uint64 id, const td_api::recognizeSpeech &request) {
@@ -6051,6 +6061,12 @@ void Requests::on_request(uint64 id, const td_api::clearAllDraftMessages &reques
   td_->messages_manager_->clear_all_draft_messages(request.exclude_secret_chats_, std::move(promise));
 }
 
+void Requests::on_request(uint64 id, const td_api::getStakeDiceState &request) {
+  CHECK_IS_USER();
+  CREATE_REQUEST_PROMISE();
+  td_->message_query_manager_->get_emoji_game_info(std::move(promise));
+}
+
 void Requests::on_request(uint64 id, const td_api::downloadFile &request) {
   CREATE_REQUEST_PROMISE();
   td_->file_manager_->download_file(FileId(request.file_id_, 0), request.priority_, request.offset_, request.limit_,
@@ -8103,7 +8119,7 @@ void Requests::on_request(uint64 id, td_api::sendGiftPurchaseOffer &request) {
 void Requests::on_request(uint64 id, const td_api::processGiftPurchaseOffer &request) {
   CHECK_IS_USER();
   CREATE_OK_REQUEST_PROMISE();
-  td_->star_gift_manager_->process_gift_offer(MessageId(request.message_id_), !request.approve_, std::move(promise));
+  td_->star_gift_manager_->process_gift_offer(MessageId(request.message_id_), !request.accept_, std::move(promise));
 }
 
 void Requests::on_request(uint64 id, td_api::getReceivedGifts &request) {

@@ -320,6 +320,8 @@ class Requests {
 
   void on_request(uint64 id, td_api::translateMessageText &request);
 
+  void on_request(uint64 id, td_api::summarizeMessage &request);
+
   void on_request(uint64 id, const td_api::recognizeSpeech &request);
 
   void on_request(uint64 id, const td_api::rateSpeechRecognition &request);
@@ -1151,6 +1153,8 @@ class Requests {
   void on_request(uint64 id, const td_api::getTimeZones &request);
 
   void on_request(uint64 id, const td_api::clearAllDraftMessages &request);
+
+  void on_request(uint64 id, const td_api::getStakeDiceState &request);
 
   void on_request(uint64 id, const td_api::downloadFile &request);
 
