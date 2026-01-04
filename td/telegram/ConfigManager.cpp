@@ -1359,6 +1359,7 @@ void ConfigManager::process_app_config(tl_object_ptr<telegram_api::JSONValue> &c
   string verify_age_country;
   int32 verify_age_min = 0;
   string whitelisted_bots;
+  string ton_stakedice_stake_suggested_amounts;
 
   // {"stories_all_hidden", "archive_all_stories"}
   static const FlatHashMap<Slice, Slice, SliceHash> bool_keys = {
@@ -1471,7 +1472,9 @@ void ConfigManager::process_app_config(tl_object_ptr<telegram_api::JSONValue> &c
       {"upload_premium_speedup_upload", "premium_upload_speedup"}};
   static const FlatHashMap<Slice, Slice, SliceHash> long_keys = {
       {"stories_changelog_user_id", "stories_changelog_user_id"},
-      {"telegram_antispam_user_id", "anti_spam_bot_user_id"}};
+      {"telegram_antispam_user_id", "anti_spam_bot_user_id"},
+      {"ton_stakedice_stake_amount_max", "stake_dice_stake_amount_max"},
+      {"ton_stakedice_stake_amount_min", "stake_dice_stake_amount_min"}};
   static const FlatHashSet<Slice, SliceHash> ignored_options(
       {"channel_color_level_min", "default_emoji_statuses_stickerset_id", "dialog_filters_enabled",
        "dialog_filters_tooltip", "forum_upgrade_participants_min", "getfile_experimental_params",
@@ -1970,6 +1973,25 @@ void ConfigManager::process_app_config(tl_object_ptr<telegram_api::JSONValue> &c
                      std::move(key_value->value_));
         continue;
       }
+      if (key == "ton_stakedice_stake_suggested_amounts") {
+        if (value->get_id() == telegram_api::jsonArray::ID) {
+          auto amounts = std::move(static_cast<telegram_api::jsonArray *>(value)->value_);
+          for (auto &amount : amounts) {
+            auto ton_amount = get_json_value_long(std::move(amount), key);
+            if (ton_amount > 0) {
+              if (!ton_stakedice_stake_suggested_amounts.empty()) {
+                ton_stakedice_stake_suggested_amounts += ',';
+              }
+              ton_stakedice_stake_suggested_amounts += to_string(ton_amount);
+            } else {
+              LOG(ERROR) << "Receive unexpected ton amount " << ton_amount;
+            }
+          }
+        } else {
+          LOG(ERROR) << "Receive unexpected ton_stakedice_stake_suggested_amounts " << to_string(*value);
+        }
+        continue;
+      }
 
       new_values.push_back(std::move(key_value));
     }
@@ -2079,6 +2101,7 @@ void ConfigManager::process_app_config(tl_object_ptr<telegram_api::JSONValue> &c
   } else {
     options.set_option_string("premium_invoice_slug", premium_invoice_slug);
   }
+  options.set_option_string("ton_stakedice_stake_suggested_amounts", ton_stakedice_stake_suggested_amounts);
 
   options.set_option_boolean("need_premium_for_new_chat_privacy", need_premium_for_new_chat_privacy);
 

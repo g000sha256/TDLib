@@ -1019,6 +1019,45 @@ class GetMessagesReactionsQuery final : public Td::ResultHandler {
   }
 };
 
+class SummarizeTextQuery final : public Td::ResultHandler {
+  Promise<td_api::object_ptr<td_api::formattedText>> promise_;
+
+ public:
+  explicit SummarizeTextQuery(Promise<td_api::object_ptr<td_api::formattedText>> &&promise)
+      : promise_(std::move(promise)) {
+  }
+
+  void send(DialogId dialog_id, MessageId message_id, const string &to_language_code) {
+    int32 flags = 0;
+    if (!to_language_code.empty()) {
+      flags |= telegram_api::messages_summarizeText::TO_LANG_MASK;
+    }
+    auto input_peer = td_->dialog_manager_->get_input_peer(dialog_id, AccessRights::Read);
+    if (input_peer == nullptr) {
+      return promise_.set_error(400, "Chat is not accessible");
+    }
+    send_query(G()->net_query_creator().create(telegram_api::messages_summarizeText(
+        flags, std::move(input_peer), message_id.get_server_message_id().get(), to_language_code)));
+  }
+
+  void on_result(BufferSlice packet) final {
+    auto result_ptr = fetch_result<telegram_api::messages_summarizeText>(packet);
+    if (result_ptr.is_error()) {
+      return on_error(result_ptr.move_as_error());
+    }
+
+    auto ptr = result_ptr.move_as_ok();
+    LOG(INFO) << "Receive result for SummarizeTextQuery: " << to_string(ptr);
+    auto formatted_text =
+        get_formatted_text(td_->user_manager_.get(), std::move(ptr), true, true, "SummarizeTextQuery");
+    promise_.set_value(get_formatted_text_object(td_->user_manager_.get(), formatted_text, true, -1));
+  }
+
+  void on_error(Status status) final {
+    promise_.set_error(std::move(status));
+  }
+};
+
 class AppendToDoListQuery final : public Td::ResultHandler {
   Promise<Unit> promise_;
   DialogId dialog_id_;
@@ -1130,6 +1169,34 @@ class GetDiscussionMessageQuery final : public Td::ResultHandler {
 
   void on_error(Status status) final {
     td_->messages_manager_->on_get_message_error(dialog_id_, message_id_, status, "GetDiscussionMessageQuery");
+    promise_.set_error(std::move(status));
+  }
+};
+
+class GetEmojiGameInfoQuery final : public Td::ResultHandler {
+  Promise<telegram_api::object_ptr<telegram_api::messages_EmojiGameInfo>> promise_;
+
+ public:
+  explicit GetEmojiGameInfoQuery(Promise<telegram_api::object_ptr<telegram_api::messages_EmojiGameInfo>> &&promise)
+      : promise_(std::move(promise)) {
+  }
+
+  void send() {
+    send_query(G()->net_query_creator().create(telegram_api::messages_getEmojiGameInfo()));
+  }
+
+  void on_result(BufferSlice packet) final {
+    auto result_ptr = fetch_result<telegram_api::messages_getEmojiGameInfo>(packet);
+    if (result_ptr.is_error()) {
+      return on_error(result_ptr.move_as_error());
+    }
+
+    auto ptr = result_ptr.move_as_ok();
+    LOG(INFO) << "Receive result for GetEmojiGameInfoQuery: " << to_string(ptr);
+    promise_.set_value(std::move(ptr));
+  }
+
+  void on_error(Status status) final {
     promise_.set_error(std::move(status));
   }
 };
@@ -2509,6 +2576,21 @@ void MessageQueryManager::do_get_paid_message_reaction_senders(
   return promise.set_value(std::move(senders));
 }
 
+void MessageQueryManager::summarize_message_text(MessageFullId message_full_id, const string &to_language_code,
+                                                 Promise<td_api::object_ptr<td_api::formattedText>> &&promise) {
+  auto dialog_id = message_full_id.get_dialog_id();
+  TRY_STATUS_PROMISE(promise, td_->dialog_manager_->check_dialog_access(dialog_id, false, AccessRights::Read,
+                                                                        "summarize_message_text"));
+  if (!td_->messages_manager_->have_message_force(message_full_id, "summarize_message_text")) {
+    return promise.set_error(400, "Message not found");
+  }
+  auto message_id = message_full_id.get_message_id();
+  if (!message_id.is_server()) {
+    return promise.set_error(400, "Message can't be summarized");
+  }
+  td_->create_handler<SummarizeTextQuery>(std::move(promise))->send(dialog_id, message_id, to_language_code);
+}
+
 void MessageQueryManager::add_to_do_list_tasks(MessageFullId message_full_id,
                                                vector<td_api::object_ptr<td_api::inputChecklistTask>> &&tasks,
                                                Promise<Unit> &&promise) {
@@ -2609,6 +2691,26 @@ void MessageQueryManager::process_discussion_message_impl(
                                                             message_thread_info.unread_message_count);
   }
   promise.set_value(std::move(message_thread_info));
+}
+
+void MessageQueryManager::get_emoji_game_info(Promise<td_api::object_ptr<td_api::stakeDiceState>> &&promise) {
+  auto query_promise = PromiseCreator::lambda(
+      [actor_id = actor_id(this), promise = std::move(promise)](
+          Result<telegram_api::object_ptr<telegram_api::messages_EmojiGameInfo>> result) mutable {
+        if (result.is_error()) {
+          return promise.set_error(result.move_as_error());
+        }
+        send_closure(actor_id, &MessageQueryManager::on_get_emoji_game_info, result.move_as_ok(), std::move(promise));
+      });
+  td_->create_handler<GetEmojiGameInfoQuery>(std::move(query_promise))->send();
+}
+
+void MessageQueryManager::on_get_emoji_game_info(
+    telegram_api::object_ptr<telegram_api::messages_EmojiGameInfo> &&result,
+    Promise<td_api::object_ptr<td_api::stakeDiceState>> &&promise) {
+  on_update_emoji_game_info(std::move(result));
+  CHECK(is_emoji_game_info_inited_);
+  promise.set_value(emoji_game_info_.get_stake_dice_state_object(td_));
 }
 
 class MessageQueryManager::BlockMessageSenderFromRepliesOnServerLogEvent {
@@ -3387,6 +3489,31 @@ void MessageQueryManager::unpin_all_dialog_messages_on_server(DialogId dialog_id
   };
   run_affected_history_query_until_complete(dialog_id, std::move(query), true,
                                             get_erase_log_event_promise(log_event_id, std::move(promise)));
+}
+
+void MessageQueryManager::on_update_emoji_game_info(
+    telegram_api::object_ptr<telegram_api::messages_EmojiGameInfo> &&game_info) {
+  EmojiGameInfo emoji_game_info(std::move(game_info));
+  if (td_->auth_manager_->is_bot()) {
+    return;
+  }
+  if (is_emoji_game_info_inited_ && emoji_game_info == emoji_game_info_) {
+    return;
+  }
+  emoji_game_info_ = std::move(emoji_game_info);
+  emoji_game_info_receive_time_ = Time::now();
+  is_emoji_game_info_inited_ = true;
+  send_closure(G()->td(), &Td::send_update, emoji_game_info_.get_update_stake_dice_state_object(td_));
+}
+
+void MessageQueryManager::get_current_state(vector<td_api::object_ptr<td_api::Update>> &updates) const {
+  if (td_->auth_manager_->is_bot()) {
+    return;
+  }
+
+  if (is_emoji_game_info_inited_ && emoji_game_info_receive_time_ > Time::now() - 60) {
+    updates.push_back(emoji_game_info_.get_update_stake_dice_state_object(td_));
+  }
 }
 
 void MessageQueryManager::on_binlog_events(vector<BinlogEvent> &&events) {

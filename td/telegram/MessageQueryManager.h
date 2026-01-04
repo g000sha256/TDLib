@@ -11,6 +11,7 @@
 #include "td/telegram/ChannelId.h"
 #include "td/telegram/DialogId.h"
 #include "td/telegram/DialogListId.h"
+#include "td/telegram/EmojiGameInfo.h"
 #include "td/telegram/files/FileUploadId.h"
 #include "td/telegram/ForumTopicId.h"
 #include "td/telegram/MessageFullId.h"
@@ -149,6 +150,9 @@ class MessageQueryManager final : public Actor {
   void get_paid_message_reaction_senders(DialogId dialog_id,
                                          Promise<td_api::object_ptr<td_api::messageSenders>> &&promise);
 
+  void summarize_message_text(MessageFullId message_full_id, const string &to_language_code,
+                              Promise<td_api::object_ptr<td_api::formattedText>> &&promise);
+
   void add_to_do_list_tasks(MessageFullId message_full_id,
                             vector<td_api::object_ptr<td_api::inputChecklistTask>> &&tasks, Promise<Unit> &&promise);
 
@@ -161,6 +165,8 @@ class MessageQueryManager final : public Actor {
   void process_discussion_message(telegram_api::object_ptr<telegram_api::messages_discussionMessage> &&result,
                                   DialogId dialog_id, MessageId message_id, DialogId expected_dialog_id,
                                   MessageId expected_message_id, Promise<MessageThreadInfo> promise);
+
+  void get_emoji_game_info(Promise<td_api::object_ptr<td_api::stakeDiceState>> &&promise);
 
   void block_message_sender_from_replies_on_server(MessageId message_id, bool need_delete_message,
                                                    bool need_delete_all_messages, bool report_spam, uint64 log_event_id,
@@ -207,6 +213,10 @@ class MessageQueryManager final : public Actor {
   void unpin_all_topic_messages_on_server(DialogId dialog_id, ForumTopicId forum_topic_id,
                                           SavedMessagesTopicId saved_messages_topic_id, uint64 log_event_id,
                                           Promise<Unit> &&promise);
+
+  void on_update_emoji_game_info(telegram_api::object_ptr<telegram_api::messages_EmojiGameInfo> &&game_info);
+
+  void get_current_state(vector<td_api::object_ptr<td_api::Update>> &updates) const;
 
   void on_binlog_events(vector<BinlogEvent> &&events);
 
@@ -261,6 +271,9 @@ class MessageQueryManager final : public Actor {
   void process_discussion_message_impl(telegram_api::object_ptr<telegram_api::messages_discussionMessage> &&result,
                                        DialogId dialog_id, MessageId message_id, DialogId expected_dialog_id,
                                        MessageId expected_message_id, Promise<MessageThreadInfo> promise);
+
+  void on_get_emoji_game_info(telegram_api::object_ptr<telegram_api::messages_EmojiGameInfo> &&result,
+                              Promise<td_api::object_ptr<td_api::stakeDiceState>> &&promise);
 
   void erase_delete_messages_log_event(uint64 log_event_id);
 
@@ -326,6 +339,10 @@ class MessageQueryManager final : public Actor {
   FlatHashMap<MessageFullId, int32, MessageFullIdHash> pending_read_reactions_;
 
   std::shared_ptr<UploadCoverCallback> upload_cover_callback_;
+
+  bool is_emoji_game_info_inited_ = false;
+  double emoji_game_info_receive_time_ = 0.0;
+  EmojiGameInfo emoji_game_info_;
 
   Td *td_;
   ActorShared<> parent_;
