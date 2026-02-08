@@ -704,6 +704,8 @@ class MessagesManager final : public Actor {
 
   td_api::object_ptr<td_api::draftMessage> get_my_dialog_draft_message_object() const;
 
+  unique_ptr<DraftMessage> get_dialog_draft_message(DialogId dialog_id) const;
+
   tl_object_ptr<td_api::messages> get_dialog_history(DialogId dialog_id, MessageId from_message_id, int32 offset,
                                                      int32 limit, int left_tries, bool only_local,
                                                      Promise<Unit> &&promise);
@@ -965,6 +967,8 @@ class MessagesManager final : public Actor {
   void finish_gift_upgrade(MessageFullId message_full_id,
                            Promise<td_api::object_ptr<td_api::upgradeGiftResult>> &&promise);
 
+  void finish_gift_craft(MessageFullId message_full_id, Promise<td_api::object_ptr<td_api::CraftGiftResult>> &&promise);
+
   Result<string> get_login_button_url(MessageFullId message_full_id, int64 button_id);
 
   struct InvoiceMessageInfo {
@@ -1126,6 +1130,7 @@ class MessagesManager final : public Actor {
     bool clear_draft = false;               // for send_message
     bool in_game_share = false;             // for send_message
     bool initial_is_topic_message = false;  // for send_message
+    bool is_quick_reply_message = false;    // for send_message
     bool hide_via_bot = false;              // for resend_message
     bool is_bot_start_message = false;      // for resend_message
 
@@ -1686,14 +1691,14 @@ class MessagesManager final : public Actor {
                                              unique_ptr<MessageContent> &&content, bool invert_media,
                                              bool suppress_reply_info, unique_ptr<MessageForwardInfo> forward_info,
                                              DialogId real_forward_from_dialog_id, bool is_copy,
-                                             DialogId send_as_dialog_id);
+                                             DialogId send_as_dialog_id, bool is_quick_reply_message);
 
   Message *get_message_to_send(Dialog *d, const MessageTopic &message_topic, MessageInputReplyTo &&input_reply_to,
                                const MessageSendOptions &options, unique_ptr<MessageContent> &&content,
                                bool invert_media, bool *need_update_dialog_pos, bool suppress_reply_info = false,
                                unique_ptr<MessageForwardInfo> forward_info = nullptr,
                                DialogId real_forward_from_dialog_id = DialogId(), bool is_copy = false,
-                               DialogId sender_dialog_id = DialogId());
+                               DialogId send_as_dialog_id = DialogId(), bool is_quick_reply_message = false);
 
   int64 begin_send_message(DialogId dialog_id, const Message *m);
 
@@ -1928,7 +1933,7 @@ class MessagesManager final : public Actor {
 
   bool can_forward_message(DialogId from_dialog_id, const Message *m, bool is_copy) const;
 
-  bool can_reply_to_message(DialogId dialog_id, MessageId message_id) const;
+  bool can_reply_to_message(const Dialog *d, MessageId message_id, const Message *m) const;
 
   bool can_reply_to_message_in_another_dialog(DialogId dialog_id, MessageId message_id, bool can_be_forwarded) const;
 
@@ -2901,7 +2906,7 @@ class MessagesManager final : public Actor {
                                   unique_ptr<DraftMessage> &&draft_message);
 
   bool update_dialog_draft_message(Dialog *d, unique_ptr<DraftMessage> &&draft_message, bool from_update,
-                                   bool need_update_dialog_pos);
+                                   bool need_update_dialog_pos, bool from_database = false);
 
   void clear_dialog_draft_by_sent_message(Dialog *d, const Message *m, bool need_update_dialog_pos);
 
