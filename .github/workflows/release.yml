@@ -21,7 +21,7 @@ jobs:
       - name: Configure Git identity
         run: |
           git config user.name "Georgii Ippolitov"
-          git config user.email "detmmpmznb@g000sha256.dev"
+          git config user.email "github@g000sha256.dev"
 
       - name: Create tags and releases for new versions
         env:

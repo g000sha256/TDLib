@@ -20,7 +20,7 @@ jobs:
       - name: Configure Git identity
         run: |
           git config user.name "Georgii Ippolitov"
-          git config user.email "detmmpmznb@g000sha256.dev"
+          git config user.email "github@g000sha256.dev"
 
       - name: Add upstream remote and fetch
         run: |
@@ -32,9 +32,3 @@ jobs:
           git checkout -B master origin/master
           git merge upstream/master -m "Merge branch 'upstream/master' into 'origin/master'"
           git push origin master
-
-      - name: Merge master into develop
-        run: |
-          git checkout -B develop origin/develop
-          git merge master -m "Merge branch 'master' into 'develop'" --no-ff
-          git push origin develop
