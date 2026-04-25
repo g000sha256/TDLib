@@ -1,3 +1,19 @@
+[![Latest release](https://img.shields.io/github/v/release/g000sha256/TDLib)](https://github.com/g000sha256/TDLib/releases/latest)
+
+> **🔄 Mirror of [tdlib/td](https://github.com/tdlib/td)** — the official **Telegram Database Library** (`TDLib`) repository,
+> with **automatic upstream sync**, **semver version tags** (`vX.Y.Z`) and a `GitHub Release` for every `TDLib` version.
+>
+> Useful when you need to pin an exact `TDLib` version with tools that require tags or releases instead of commit hashes.
+>
+> - 📦 **[Releases](https://github.com/g000sha256/TDLib/releases)** — every `TDLib` version tagged and released automatically
+> - 🏷️ **[Tags](https://github.com/g000sha256/TDLib/tags)** — semver tags matching upstream versions
+> - 🔗 **Upstream:** [github.com/tdlib/td](https://github.com/tdlib/td) — all credit for `TDLib` goes to the original authors
+> - 📖 **Docs:** [core.telegram.org/tdlib](https://core.telegram.org/tdlib)
+>
+> This fork contains **no code modifications** — it only adds version tags, releases, and an automated sync workflow.
+
+---
+
 # TDLib
 
 TDLib (Telegram Database library) is a cross-platform library for building [Telegram](https://telegram.org) clients. It can be easily used from almost any programming language.
