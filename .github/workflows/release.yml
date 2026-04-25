@@ -88,13 +88,31 @@ jobs:
 
           echo ""
           echo "📦 Creating releases:"
+          prev_version=""
           for item in ${versions[@]}; do
             version=${item%%:*}
             tag=v$version
+            commit=${item#*:}
+            short_sha=${commit:0:7}
 
-            if gh release create $tag --title $version --generate-notes > /dev/null 2>&1; then
+            if [ -z "$prev_version" ]; then
+              prev_tag=$(git describe --tags --abbrev=0 ${tag}^)
+            else
+              prev_tag=v$prev_version
+            fi
+
+            commit_count=$(git rev-list --count "$prev_tag..$tag")
+            commits_word="commits"
+            [ "$commit_count" -eq 1 ] && commits_word="commit"
+
+            body="- 🔄 Synced from [tdlib/td@${short_sha}](https://github.com/tdlib/td/commit/${commit})"
+            body+=$'\n'"- 📋 **${commit_count} ${commits_word}** from upstream — see full diff [${prev_tag}...${tag}](https://github.com/g000sha256/TDLib/compare/${prev_tag}...${tag})"
+
+            if gh release create $tag --title $version --notes "$body" > /dev/null 2>&1; then
               echo "  ✅ Created release: $version"
             else
               echo "  ⚠️ Release already exists: $version"
             fi
+
+            prev_version=$version
           done
