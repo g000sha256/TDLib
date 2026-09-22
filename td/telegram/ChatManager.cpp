@@ -8805,15 +8805,12 @@ bool ChatManager::get_channel_join_request(const Channel *c) {
   return c->join_request && c->is_megagroup && !c->is_monoforum && !c->is_gigagroup;
 }
 
-ChannelId ChatManager::get_channel_linked_channel_id(ChannelId channel_id, const char *source) {
+ChannelId ChatManager::get_channel_linked_channel_id(ChannelId channel_id, bool force, const char *source) {
   auto channel_full = get_channel_full_const(channel_id);
-  if (channel_full == nullptr) {
+  if (channel_full == nullptr && force) {
     channel_full = get_channel_full_force(channel_id, true, source);
-    if (channel_full == nullptr) {
-      return ChannelId();
-    }
   }
-  return channel_full->linked_channel_id;
+  return channel_full == nullptr ? ChannelId() : channel_full->linked_channel_id;
 }
 
 int32 ChatManager::get_channel_slow_mode_delay(ChannelId channel_id, const char *source) {
@@ -9932,10 +9929,11 @@ td_api::object_ptr<td_api::supergroupFullInfo> ChatManager::get_supergroup_full_
       get_chat_photo_object(td_->file_manager_.get(), *photo),
       td_->community_manager_->get_community_id_object(channel_full->linked_community_id, "supergroupFullInfo"),
       channel_full->description, channel_full->participant_count, channel_full->administrator_count,
-      channel_full->restricted_count, channel_full->banned_count, DialogId(channel_full->linked_channel_id).get(),
-      DialogId(channel_full->monoforum_channel_id).get(), channel_full->slow_mode_delay, slow_mode_delay_expires_in,
-      channel_full->has_paid_messages_available, channel_full->has_paid_media_allowed,
-      channel_full->can_get_participants, has_hidden_participants,
+      channel_full->restricted_count, channel_full->banned_count,
+      td_->dialog_manager_->get_chat_id_object(DialogId(channel_full->linked_channel_id), "linked chat"),
+      td_->dialog_manager_->get_chat_id_object(DialogId(channel_full->monoforum_channel_id), "monoforum chat"),
+      channel_full->slow_mode_delay, slow_mode_delay_expires_in, channel_full->has_paid_messages_available,
+      channel_full->has_paid_media_allowed, channel_full->can_get_participants, has_hidden_participants,
       can_hide_channel_participants(channel_id, channel_full).is_ok(), channel_full->can_set_sticker_set,
       channel_full->can_set_location, channel_full->can_view_statistics, channel_full->can_view_revenue,
       channel_full->can_view_star_revenue, channel_full->has_stargifts_available,
