@@ -8,9 +8,11 @@
 
 #include "td/telegram/AuthManager.h"
 #include "td/telegram/Dependencies.h"
+#include "td/telegram/files/FileUploadId.h"
 #include "td/telegram/MessageContent.h"
 #include "td/telegram/MessageContentDupType.h"
 #include "td/telegram/MessageCopyOptions.h"
+#include "td/telegram/MessageSelfDestructType.h"
 #include "td/telegram/MessageSender.h"
 #include "td/telegram/OptionManager.h"
 #include "td/telegram/Td.h"
@@ -71,6 +73,12 @@ Result<PollOption> PollOption::get_poll_option(Td *td, DialogId dialog_id,
 
   return PollOption(std::move(text), std::move(media));
 }
+
+PollOption::PollOption(PollOption &&) noexcept = default;
+
+PollOption &PollOption::operator=(PollOption &&) noexcept = default;
+
+PollOption::~PollOption() = default;
 
 Result<vector<PollOption>> PollOption::get_poll_options(
     Td *td, DialogId dialog_id, vector<td_api::object_ptr<td_api::inputPollOption>> &&input_poll_options) {

@@ -15,7 +15,9 @@
 #include "td/telegram/files/FileManager.h"
 #include "td/telegram/files/FileUploadId.h"
 #include "td/telegram/Global.h"
+#include "td/telegram/InlineMessageContent.h"
 #include "td/telegram/InlineQueriesManager.h"
+#include "td/telegram/InputMedia.h"
 #include "td/telegram/logevent/LogEvent.h"
 #include "td/telegram/logevent/LogEventHelper.h"
 #include "td/telegram/MessageContent.h"
@@ -876,6 +878,8 @@ void QuickReplyManager::Shortcuts::parse(ParserT &parser) {
 QuickReplyManager::QuickReplyManager(Td *td, ActorShared<> parent) : td_(td), parent_(std::move(parent)) {
   upload_message_content_callback_ = std::make_shared<UploadMessageContentCallback>(this);
 }
+
+QuickReplyManager::~QuickReplyManager() = default;
 
 void QuickReplyManager::tear_down() {
   parent_.reset();
