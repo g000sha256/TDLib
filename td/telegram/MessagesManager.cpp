@@ -785,12 +785,8 @@ class GetSearchResultCalendarQuery final : public Td::ResultHandler {
 
     auto saved_input_peer = message_topic.get_saved_input_peer(td_);
     CHECK(message_topic.get_input_top_msg_id() == 0);
-    int32 flags = 0;
-    if (saved_input_peer != nullptr) {
-      flags |= telegram_api::messages_getSearchResultsCalendar::SAVED_PEER_ID_MASK;
-    }
     send_query(G()->net_query_creator().create(telegram_api::messages_getSearchResultsCalendar(
-        flags, std::move(input_peer), std::move(saved_input_peer), get_input_messages_filter(filter),
+        0, std::move(input_peer), std::move(saved_input_peer), get_input_messages_filter(filter),
         from_message_id.get_server_message_id().get(), 0)));
   }
 
@@ -890,9 +886,6 @@ class SearchMessagesQuery final : public Td::ResultHandler {
       if (top_msg_id != 0) {
         flags |= telegram_api::messages_getUnreadReactions::TOP_MSG_ID_MASK;
       }
-      if (saved_input_peer != nullptr) {
-        flags |= telegram_api::messages_getUnreadReactions::SAVED_PEER_ID_MASK;
-      }
       send_query(G()->net_query_creator().create(telegram_api::messages_getUnreadReactions(
           flags, std::move(input_peer), top_msg_id, std::move(saved_input_peer), offset_id, offset, limit,
           std::numeric_limits<int32>::max(), 0)));
@@ -917,16 +910,11 @@ class SearchMessagesQuery final : public Td::ResultHandler {
       int32 flags = 0;
       tl_object_ptr<telegram_api::InputPeer> sender_input_peer;
       if (sender_dialog_id.is_valid()) {
-        flags |= telegram_api::messages_search::FROM_ID_MASK;
         sender_input_peer = td_->dialog_manager_->get_input_peer(sender_dialog_id, AccessRights::Know);
         CHECK(sender_input_peer != nullptr);
       }
-      if (saved_input_peer != nullptr) {
-        flags |= telegram_api::messages_search::SAVED_PEER_ID_MASK;
-      }
       vector<telegram_api::object_ptr<telegram_api::Reaction>> saved_reactions;
       if (!tag.is_empty()) {
-        flags |= telegram_api::messages_search::SAVED_REACTION_MASK;
         saved_reactions.push_back(tag.get_input_reaction());
       }
       if (top_msg_id != 0) {
@@ -1055,15 +1043,13 @@ class GetSearchResultPositionsQuery final : public Td::ResultHandler {
     saved_messages_topic_id_ = saved_messages_topic_id;
     filter_ = filter;
 
-    int32 flags = 0;
     telegram_api::object_ptr<telegram_api::InputPeer> saved_input_peer;
     if (saved_messages_topic_id.is_valid()) {
-      flags |= telegram_api::messages_getSearchResultsPositions::SAVED_PEER_ID_MASK;
       saved_input_peer = saved_messages_topic_id.get_input_peer(td_);
       CHECK(saved_input_peer != nullptr);
     }
     send_query(G()->net_query_creator().create(telegram_api::messages_getSearchResultsPositions(
-        flags, std::move(input_peer), std::move(saved_input_peer), get_input_messages_filter(filter),
+        0, std::move(input_peer), std::move(saved_input_peer), get_input_messages_filter(filter),
         from_message_id.get_server_message_id().get(), limit)));
   }
 
@@ -1114,9 +1100,6 @@ class GetSearchCountersQuery final : public Td::ResultHandler {
     auto saved_input_peer = message_topic.get_saved_input_peer(td_);
     auto top_msg_id = message_topic.get_input_top_msg_id();
     int32 flags = 0;
-    if (saved_input_peer != nullptr) {
-      flags |= telegram_api::messages_getSearchCounters::SAVED_PEER_ID_MASK;
-    }
     if (top_msg_id != 0) {
       flags |= telegram_api::messages_getSearchCounters::TOP_MSG_ID_MASK;
     }
@@ -1209,20 +1192,9 @@ class SendMessageQuery final : public Td::ResultHandler {
     }
 
     auto reply_to = input_reply_to.get_input_reply_to(td_, message_topic, false, dialog_id, flags);
-
-    if (reply_to != nullptr) {
-      flags |= telegram_api::messages_sendMessage::REPLY_TO_MASK;
-    }
     auto entities = get_input_message_entities(td_->user_manager_.get(), text.entities, "SendMessageQuery");
-    if (!entities.empty()) {
-      flags |= MessagesManager::SEND_MESSAGE_FLAG_HAS_ENTITIES;
-    }
-    if (as_input_peer != nullptr) {
-      flags |= MessagesManager::SEND_MESSAGE_FLAG_HAS_SEND_AS;
-    }
     telegram_api::object_ptr<telegram_api::suggestedPost> post;
     if (suggested_post != nullptr) {
-      flags |= telegram_api::messages_sendMessage::SUGGESTED_POST_MASK;
       post = suggested_post->get_input_suggested_post();
     }
     if (false) {
@@ -1358,14 +1330,6 @@ class SendInlineBotResultQuery final : public Td::ResultHandler {
     CHECK(input_peer != nullptr);
 
     auto reply_to = input_reply_to.get_input_reply_to(td_, message_topic, false, dialog_id, flags);
-
-    if (reply_to != nullptr) {
-      flags |= telegram_api::messages_sendInlineBotResult::REPLY_TO_MASK;
-    }
-    if (as_input_peer != nullptr) {
-      flags |= MessagesManager::SEND_MESSAGE_FLAG_HAS_SEND_AS;
-    }
-
     auto query = G()->net_query_creator().create(
         telegram_api::messages_sendInlineBotResult(flags, false, false, false, false, std::move(input_peer),
                                                    std::move(reply_to), random_id, query_id, result_id, schedule_date,
@@ -1430,14 +1394,6 @@ class SendMultiMediaQuery final : public Td::ResultHandler {
     }
 
     auto reply_to = input_reply_to.get_input_reply_to(td_, message_topic, false, dialog_id, flags);
-
-    if (reply_to != nullptr) {
-      flags |= telegram_api::messages_sendMultiMedia::REPLY_TO_MASK;
-    }
-    if (as_input_peer != nullptr) {
-      flags |= MessagesManager::SEND_MESSAGE_FLAG_HAS_SEND_AS;
-    }
-
     // no quick ack, because file reference errors are very likely to happen
     send_query(G()->net_query_creator().create(
         telegram_api::messages_sendMultiMedia(flags, false, false, false, false, false, false, false,
@@ -1564,24 +1520,8 @@ class SendMediaQuery final : public Td::ResultHandler {
       bool invert_media = (flags & MessagesManager::SEND_MESSAGE_FLAG_INVERT_MEDIA) != 0;
       bool noforwards = (flags & MessagesManager::SEND_MESSAGE_FLAG_NOFORWARDS) != 0;
       flags = 0;
-      flags |= telegram_api::ephemeral_sendMessage::PEER_MASK;
-      if (reply_to != nullptr) {
-        flags |= telegram_api::ephemeral_sendMessage::REPLY_TO_MASK;
-      }
       auto entities = get_input_message_entities(td_->user_manager_.get(), text, "SendMediaQuery");
-      if (!entities.empty()) {
-        flags |= telegram_api::ephemeral_sendMessage::ENTITIES_MASK;
-      }
-      if (input_media.rich_message_ != nullptr) {
-        flags |= telegram_api::ephemeral_sendMessage::RICH_MESSAGE_MASK;
-      }
-      if (input_media.media_ != nullptr) {
-        flags |= telegram_api::ephemeral_sendMessage::MEDIA_MASK;
-      }
       auto input_reply_markup = get_input_reply_markup(td_->user_manager_.get(), reply_markup);
-      if (input_reply_markup != nullptr) {
-        flags |= telegram_api::ephemeral_sendMessage::REPLY_MARKUP_MASK;
-      }
       if (send_callback_query_id != 0) {
         flags |= telegram_api::ephemeral_sendMessage::QUERY_ID_MASK;
       }
@@ -1600,19 +1540,10 @@ class SendMediaQuery final : public Td::ResultHandler {
     }
     if (input_media.rich_message_ != nullptr) {
       CHECK(text == nullptr);
-      if (reply_to != nullptr) {
-        flags |= telegram_api::messages_sendMessage::REPLY_TO_MASK;
-      }
-      if (as_input_peer != nullptr) {
-        flags |= MessagesManager::SEND_MESSAGE_FLAG_HAS_SEND_AS;
-      }
       telegram_api::object_ptr<telegram_api::suggestedPost> post;
       if (suggested_post != nullptr) {
-        flags |= telegram_api::messages_sendMessage::SUGGESTED_POST_MASK;
         post = suggested_post->get_input_suggested_post();
       }
-      flags |= telegram_api::messages_sendMessage::RICH_MESSAGE_MASK;
-
       auto query = G()->net_query_creator().create(
           telegram_api::messages_sendMessage(
               flags, false, false, false, false, false, false, false, false, std::move(input_peer), std::move(reply_to),
@@ -1627,19 +1558,9 @@ class SendMediaQuery final : public Td::ResultHandler {
     }
     CHECK(input_media.media_ != nullptr);
 
-    if (reply_to != nullptr) {
-      flags |= telegram_api::messages_sendMedia::REPLY_TO_MASK;
-    }
     auto entities = get_input_message_entities(td_->user_manager_.get(), text, "SendMediaQuery");
-    if (!entities.empty()) {
-      flags |= telegram_api::messages_sendMedia::ENTITIES_MASK;
-    }
-    if (as_input_peer != nullptr) {
-      flags |= telegram_api::messages_sendMedia::SEND_AS_MASK;
-    }
     telegram_api::object_ptr<telegram_api::suggestedPost> post;
     if (suggested_post != nullptr) {
-      flags |= telegram_api::messages_sendMedia::SUGGESTED_POST_MASK;
       post = suggested_post->get_input_suggested_post();
     }
 
@@ -1756,9 +1677,8 @@ class UploadMediaQuery final : public Td::ResultHandler {
       return on_error(Status::Error(400, "Have no write access to the chat"));
     }
 
-    int32 flags = 0;
     send_query(G()->net_query_creator().create(
-        telegram_api::messages_uploadMedia(flags, string(), std::move(input_peer), std::move(input_media))));
+        telegram_api::messages_uploadMedia(0, string(), std::move(input_peer), std::move(input_media))));
   }
 
   void on_result(BufferSlice packet) final {
@@ -1886,23 +1806,11 @@ class EditMessageQuery final : public Td::ResultHandler {
     }
 
     int32 flags = 0;
-    if (input_reply_markup != nullptr) {
-      flags |= telegram_api::messages_editMessage::REPLY_MARKUP_MASK;
-    }
     vector<telegram_api::object_ptr<telegram_api::MessageEntity>> entities;
     if (edit_text) {
       flags |= telegram_api::messages_editMessage::MESSAGE_MASK;
 
       entities = get_input_message_entities(td_->user_manager_.get(), text, "EditMessageQuery");
-      if (!entities.empty()) {
-        flags |= telegram_api::messages_editMessage::ENTITIES_MASK;
-      }
-    }
-    if (input_media.rich_message_ != nullptr) {
-      flags |= telegram_api::messages_editMessage::RICH_MESSAGE_MASK;
-    }
-    if (input_media.media_ != nullptr) {
-      flags |= telegram_api::messages_editMessage::MEDIA_MASK;
     }
     if (schedule_date != 0) {
       flags |= telegram_api::messages_editMessage::SCHEDULE_DATE_MASK;
@@ -1986,13 +1894,6 @@ class ForwardMessagesQuery final : public Td::ResultHandler {
     }
 
     auto input_reply_to = message_input_reply_to.get_input_reply_to(td_, message_topic, false, to_dialog_id, flags);
-    if (input_reply_to != nullptr) {
-      flags |= telegram_api::messages_forwardMessages::REPLY_TO_MASK;
-    }
-
-    if (as_input_peer != nullptr) {
-      flags |= MessagesManager::SEND_MESSAGE_FLAG_HAS_SEND_AS;
-    }
     auto top_msg_id = message_topic.get_input_top_msg_id();
     if (top_msg_id != 0) {
       flags |= MessagesManager::SEND_MESSAGE_FLAG_IS_FROM_THREAD;
@@ -2002,7 +1903,6 @@ class ForwardMessagesQuery final : public Td::ResultHandler {
     }
     telegram_api::object_ptr<telegram_api::suggestedPost> post;
     if (suggested_post != nullptr) {
-      flags |= telegram_api::messages_forwardMessages::SUGGESTED_POST_MASK;
       post = suggested_post->get_input_suggested_post();
     }
 
@@ -15118,7 +15018,7 @@ void MessagesManager::translate_message_text(MessageFullId message_full_id, cons
   }
 
   auto text = get_message_content_text(get_message_actual_content(m));
-  if (text == nullptr || text->text.empty()) {
+  if (text == nullptr || text->is_empty()) {
     return promise.set_value(td_api::make_object<td_api::formattedText>());
   }
 
@@ -22337,12 +22237,6 @@ void MessagesManager::send_secret_message(DialogId dialog_id, const Message *m, 
   if (m->via_bot_user_id.is_valid()) {
     flags |= secret_api::decryptedMessage::VIA_BOT_NAME_MASK;
   }
-  if (!media.empty()) {
-    flags |= secret_api::decryptedMessage::MEDIA_MASK;
-  }
-  if (!entities.empty()) {
-    flags |= secret_api::decryptedMessage::ENTITIES_MASK;
-  }
   if (m->media_album_id != 0) {
     CHECK(m->media_album_id < 0);
     flags |= secret_api::decryptedMessage::GROUPED_ID_MASK;
@@ -22644,14 +22538,9 @@ void MessagesManager::do_send_message_group(int64 media_album_id) {
                  << " " << file_view.has_url() << " " << to_string(get_message_message_content_object(dialog_id, m));
     }
     auto entities = get_input_message_entities(td_->user_manager_.get(), caption, "do_send_message_group");
-    int32 input_single_media_flags = 0;
-    if (!entities.empty()) {
-      input_single_media_flags |= telegram_api::inputSingleMedia::ENTITIES_MASK;
-    }
 
     input_single_media.push_back(telegram_api::make_object<telegram_api::inputSingleMedia>(
-        input_single_media_flags, std::move(input_media), random_ids.back(), caption == nullptr ? "" : caption->text,
-        std::move(entities)));
+        0, std::move(input_media), random_ids.back(), caption == nullptr ? "" : caption->text, std::move(entities)));
   }
 
   if (!success) {
@@ -23037,7 +22926,8 @@ Result<td_api::object_ptr<td_api::message>> MessagesManager::send_inline_query_r
       UNREACHABLE();
   }
 
-  const InlineMessageContent *content = td_->inline_queries_manager_->get_inline_message_content(query_id, result_id);
+  const InlineMessageContent *content =
+      td_->inline_queries_manager_->get_inline_message_content(query_id, result_id, !message_send_options.only_preview);
   if (content == nullptr) {
     return Status::Error(400, "Inline query result not found");
   }
@@ -24184,9 +24074,6 @@ int32 MessagesManager::get_message_flags(const Message *m) {
   if (m->disable_web_page_preview) {
     flags |= SEND_MESSAGE_FLAG_DISABLE_WEB_PAGE_PREVIEW;
   }
-  if (m->reply_markup != nullptr) {
-    flags |= SEND_MESSAGE_FLAG_HAS_REPLY_MARKUP;
-  }
   if (m->disable_notification) {
     flags |= SEND_MESSAGE_FLAG_DISABLE_NOTIFICATION;
   }
@@ -24408,9 +24295,6 @@ void MessagesManager::do_forward_messages(DialogId to_dialog_id, DialogId from_d
     if (schedule_repeat_period != 0) {
       flags |= SEND_MESSAGE_FLAG_HAS_SCHEDULE_REPEAT_PERIOD;
     }
-  }
-  if (as_input_peer != nullptr) {
-    flags |= SEND_MESSAGE_FLAG_HAS_SEND_AS;
   }
   if (messages[0]->noforwards) {
     flags |= SEND_MESSAGE_FLAG_NOFORWARDS;
