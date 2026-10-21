@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
 
-project(TDLib VERSION 1.8.68 LANGUAGES CXX C)
+project(TDLib VERSION 1.8.69 LANGUAGES CXX C)
 
 if (NOT DEFINED CMAKE_MODULE_PATH)
   set(CMAKE_MODULE_PATH "")
@@ -561,6 +561,7 @@ set(TDLIB_SOURCE_PART2
   td/telegram/net/Session.cpp
   td/telegram/net/SessionMultiProxy.cpp
   td/telegram/net/SessionProxy.cpp
+  td/telegram/net/WebProxyManager.cpp
   td/telegram/NewPasswordState.cpp
   td/telegram/NotificationGroupInfo.cpp
   td/telegram/NotificationGroupType.cpp
@@ -590,6 +591,7 @@ set(TDLIB_SOURCE_PART2
   td/telegram/Premium.cpp
   td/telegram/PremiumGiftOption.cpp
   td/telegram/PrivacyManager.cpp
+  td/telegram/ProfileShareTheme.cpp
   td/telegram/ProfileTab.cpp
   td/telegram/PromoDataManager.cpp
   td/telegram/QueryCombiner.cpp
@@ -688,6 +690,9 @@ set(TDLIB_SOURCE_PART2
   td/telegram/ToDoItem.cpp
   td/telegram/ToDoList.cpp
   td/telegram/TonAmount.cpp
+  td/telegram/TonNft.cpp
+  td/telegram/TonWalletCard.cpp
+  td/telegram/TonWalletCardSticker.cpp
   td/telegram/TonWalletManager.cpp
   td/telegram/TonWalletOwnershipProof.cpp
   td/telegram/TopDialogCategory.cpp
@@ -985,6 +990,7 @@ set(TDLIB_SOURCE_PART2
   td/telegram/net/SessionMultiProxy.h
   td/telegram/net/SessionProxy.h
   td/telegram/net/TempAuthKeyWatchdog.h
+  td/telegram/net/WebProxyManager.h
   td/telegram/NewPasswordState.h
   td/telegram/Notification.h
   td/telegram/NotificationGroupFromDatabase.h
@@ -1025,6 +1031,7 @@ set(TDLIB_SOURCE_PART2
   td/telegram/Premium.h
   td/telegram/PremiumGiftOption.h
   td/telegram/PrivacyManager.h
+  td/telegram/ProfileShareTheme.h
   td/telegram/ProfileTab.h
   td/telegram/PromoDataManager.h
   td/telegram/PtsManager.h
@@ -1142,6 +1149,9 @@ set(TDLIB_SOURCE_PART2
   td/telegram/ToDoItem.h
   td/telegram/ToDoList.h
   td/telegram/TonAmount.h
+  td/telegram/TonNft.h
+  td/telegram/TonWalletCard.h
+  td/telegram/TonWalletCardSticker.h
   td/telegram/TonWalletManager.h
   td/telegram/TonWalletOwnershipProof.h
   td/telegram/TopDialogCategory.h
@@ -1252,6 +1262,7 @@ set(TDLIB_SOURCE_PART2
   td/telegram/PollManager.hpp
   td/telegram/PollOption.hpp
   td/telegram/PremiumGiftOption.hpp
+  td/telegram/ProfileShareTheme.hpp
   td/telegram/ReactionManager.hpp
   td/telegram/ReactionNotificationSettings.hpp
   td/telegram/ReactionNotificationsFrom.hpp
@@ -1295,6 +1306,9 @@ set(TDLIB_SOURCE_PART2
   td/telegram/ToDoItem.hpp
   td/telegram/ToDoList.hpp
   td/telegram/TonAmount.hpp
+  td/telegram/TonNft.hpp
+  td/telegram/TonWalletCard.hpp
+  td/telegram/TonWalletCardSticker.hpp
   td/telegram/TranscriptionInfo.hpp
   td/telegram/VideoNotesManager.hpp
   td/telegram/VideosManager.hpp

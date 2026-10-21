@@ -64,6 +64,8 @@
 #include "td/telegram/PhotoSize.h"
 #include "td/telegram/PremiumGiftOption.h"
 #include "td/telegram/PremiumGiftOption.hpp"
+#include "td/telegram/ProfileShareTheme.h"
+#include "td/telegram/ProfileShareTheme.hpp"
 #include "td/telegram/ReactionListType.h"
 #include "td/telegram/ReactionManager.h"
 #include "td/telegram/ReferralProgramInfo.hpp"
@@ -81,6 +83,8 @@
 #include "td/telegram/TdDb.h"
 #include "td/telegram/telegram_api.h"
 #include "td/telegram/ThemeManager.h"
+#include "td/telegram/TonWalletCard.h"
+#include "td/telegram/TonWalletCard.hpp"
 #include "td/telegram/UpdatesManager.h"
 #include "td/telegram/VerificationStatus.h"
 #include "td/telegram/Version.h"
@@ -2271,6 +2275,8 @@ void UserManager::UserFull::store(StorerT &storer) const {
   bool has_note = !note.is_empty();
   bool has_manager_bot_user_id = bot_info != nullptr && bot_info->manager_bot_user_id != UserId();
   bool has_linked_community_id = linked_community_id.is_valid();
+  bool has_ton_wallet_card = ton_wallet_card != nullptr;
+  bool has_share_theme = share_theme != nullptr;
   BEGIN_STORE_FLAGS();
   STORE_FLAG(has_about);
   STORE_FLAG(is_blocked);
@@ -2330,7 +2336,9 @@ void UserManager::UserFull::store(StorerT &storer) const {
     STORE_FLAG(noforwards_peer_enabled);
     STORE_FLAG(has_manager_bot_user_id);
     STORE_FLAG(unofficial_security_risk);
-    STORE_FLAG(has_linked_community_id);
+    STORE_FLAG(has_linked_community_id);  // 25
+    STORE_FLAG(has_ton_wallet_card);
+    STORE_FLAG(has_share_theme);
     END_STORE_FLAGS();
   }
   if (has_about) {
@@ -2442,6 +2450,12 @@ void UserManager::UserFull::store(StorerT &storer) const {
   if (has_linked_community_id) {
     store(linked_community_id, storer);
   }
+  if (has_ton_wallet_card) {
+    store(ton_wallet_card, storer);
+  }
+  if (has_share_theme) {
+    store(share_theme, storer);
+  }
 }
 
 template <class ParserT>
@@ -2486,6 +2500,8 @@ void UserManager::UserFull::parse(ParserT &parser) {
   bool has_note = false;
   bool has_manager_bot_user_id = false;
   bool has_linked_community_id = false;
+  bool has_ton_wallet_card = false;
+  bool has_share_theme = false;
   BEGIN_PARSE_FLAGS();
   PARSE_FLAG(has_about);
   PARSE_FLAG(is_blocked);
@@ -2546,6 +2562,8 @@ void UserManager::UserFull::parse(ParserT &parser) {
     PARSE_FLAG(has_manager_bot_user_id);
     PARSE_FLAG(unofficial_security_risk);
     PARSE_FLAG(has_linked_community_id);
+    PARSE_FLAG(has_ton_wallet_card);
+    PARSE_FLAG(has_share_theme);
     END_PARSE_FLAGS();
   }
   if (has_about) {
@@ -2660,6 +2678,12 @@ void UserManager::UserFull::parse(ParserT &parser) {
   }
   if (has_linked_community_id) {
     parse(linked_community_id, parser);
+  }
+  if (has_ton_wallet_card) {
+    parse(ton_wallet_card, parser);
+  }
+  if (has_share_theme) {
+    parse(share_theme, parser);
   }
 }
 
@@ -4742,6 +4766,33 @@ void UserManager::on_update_user_full_note(UserFull *user_full, FormattedText &&
   }
 }
 
+void UserManager::on_update_user_full_ton_wallet_card(UserFull *user_full,
+                                                      unique_ptr<TonWalletCard> &&ton_wallet_card) {
+  CHECK(user_full != nullptr);
+  if (user_full->ton_wallet_card != ton_wallet_card) {
+    user_full->ton_wallet_card = std::move(ton_wallet_card);
+    user_full->is_changed = true;
+  }
+}
+
+void UserManager::on_update_user_full_share_theme(UserFull *user_full, unique_ptr<ProfileShareTheme> &&share_theme) {
+  CHECK(user_full != nullptr);
+  if (user_full->share_theme != share_theme) {
+    user_full->share_theme = std::move(share_theme);
+    user_full->is_changed = true;
+  }
+}
+
+void UserManager::on_update_my_ton_wallet_card(unique_ptr<TonWalletCard> &&ton_wallet_card) {
+  auto my_id = get_my_id();
+  UserFull *user_full = get_user_full_force(my_id, "on_update_my_ton_wallet_card");
+  if (user_full == nullptr) {
+    return;
+  }
+  on_update_user_full_ton_wallet_card(user_full, std::move(ton_wallet_card));
+  update_user_full(user_full, my_id, "on_update_my_ton_wallet_card");
+}
+
 std::pair<int64, int64> UserManager::get_saved_music_document_id(FileId saved_music_file_id, bool from_server) const {
   auto file_view = td_->file_manager_->get_file_view(saved_music_file_id);
   if (file_view.empty() || file_view.get_type() != FileType::Audio) {
@@ -5477,14 +5528,14 @@ Result<UserManager::BotData> UserManager::get_bot_data(UserId user_id) const {
   if (u == nullptr) {
     return Status::Error(400, "Bot not found");
   }
-  if (!u->is_bot) {
-    return Status::Error(400, "User is not a bot");
+  if (!u->is_received) {
+    return Status::Error(400, "User is inaccessible");
   }
   if (u->is_deleted) {
-    return Status::Error(400, "Bot is deleted");
+    return Status::Error(400, "User is deleted");
   }
-  if (!u->is_received) {
-    return Status::Error(400, "Bot is inaccessible");
+  if (!u->is_bot) {
+    return Status::Error(400, "User is not a bot");
   }
 
   BotData bot_data;
@@ -6315,7 +6366,7 @@ void UserManager::add_set_profile_photo_to_cache(UserId user_id, Photo &&photo, 
   bool is_me = user_id == get_my_id();
 
   // update photo list
-  auto user_photos = user_photos_.get_pointer(user_id);
+  auto user_photos = user_photos_.get(user_id);
   if (is_me && !is_fallback && user_photos != nullptr && user_photos->count != -1 && !photo.is_empty()) {
     if (user_photos->offset == 0) {
       if (user_photos->photos.empty() || user_photos->photos[0].id.get() != photo.id.get()) {
@@ -6398,7 +6449,7 @@ bool UserManager::delete_my_profile_photo_from_cache(int64 profile_photo_id) {
   bool is_main_photo_deleted = u != nullptr && u->photo.id == profile_photo_id;
 
   // update photo list
-  auto user_photos = user_photos_.get_pointer(user_id);
+  auto user_photos = user_photos_.get(user_id);
   if (user_photos != nullptr && user_photos->count > 0) {
     auto old_size = user_photos->photos.size();
     if (td::remove_if(user_photos->photos,
@@ -7142,11 +7193,7 @@ FileSourceId UserManager::get_user_profile_photo_file_source_id(UserId user_id, 
 
 UserManager::UserPhotos *UserManager::add_user_photos(UserId user_id) {
   CHECK(user_id.is_valid());
-  auto &user_photos_ptr = user_photos_[user_id];
-  if (user_photos_ptr == nullptr) {
-    user_photos_ptr = make_unique<UserPhotos>();
-  }
-  return user_photos_ptr.get();
+  return &user_photos_[user_id];
 }
 
 void UserManager::on_get_user_photos(UserId user_id, int32 offset, int32 limit, int32 total_count,
@@ -7459,7 +7506,7 @@ void UserManager::on_add_saved_music(FileId file_id, FileId after_file_id, Promi
   }
 
   auto user_id = get_my_id();
-  auto user_saved_music = user_saved_music_.get_pointer(user_id);
+  auto user_saved_music = user_saved_music_.get(user_id);
   if (user_saved_music != nullptr && user_saved_music->count != -1 && user_saved_music->offset != -1) {
     auto is_deleted = td::remove(user_saved_music->saved_music_file_ids, file_id);
     if (!is_deleted) {
@@ -7506,7 +7553,7 @@ void UserManager::on_remove_saved_music(FileId file_id, Promise<Unit> &&promise)
   }
 
   auto user_id = get_my_id();
-  auto user_saved_music = user_saved_music_.get_pointer(user_id);
+  auto user_saved_music = user_saved_music_.get(user_id);
   if (user_saved_music != nullptr && user_saved_music->count != -1 && user_saved_music->offset != -1) {
     auto is_deleted = td::remove(user_saved_music->saved_music_file_ids, file_id);
     if (is_deleted || user_saved_music->offset == 0) {
@@ -7696,11 +7743,7 @@ void UserManager::finish_get_user_saved_music(UserId user_id, Result<Unit> &&res
 
 UserManager::UserSavedMusic *UserManager::add_user_saved_music(UserId user_id) {
   CHECK(user_id.is_valid());
-  auto &user_saved_music_ptr = user_saved_music_[user_id];
-  if (user_saved_music_ptr == nullptr) {
-    user_saved_music_ptr = make_unique<UserSavedMusic>();
-  }
-  return user_saved_music_ptr.get();
+  return &user_saved_music_[user_id];
 }
 
 void UserManager::on_get_user_saved_music(UserId user_id, int32 offset, int32 limit, int32 total_count,
@@ -7946,12 +7989,13 @@ void UserManager::can_send_message_to_user(UserId user_id, bool force,
     return promise.set_value(td_api::make_object<td_api::canSendMessageToUserResultOk>());
   }
 
-  auto it = user_full_contact_price_.find(user_id);
-  if (it != user_full_contact_price_.end()) {
-    if (it->second > 0) {
-      return promise.set_value(td_api::make_object<td_api::canSendMessageToUserResultUserHasPaidMessages>(it->second));
+  auto *contact_price = user_full_contact_price_.get(user_id);
+  if (contact_price != nullptr) {
+    if (*contact_price > 0) {
+      return promise.set_value(
+          td_api::make_object<td_api::canSendMessageToUserResultUserHasPaidMessages>(*contact_price));
     }
-    if (it->second == -1) {
+    if (*contact_price == -1) {
       return promise.set_value(td_api::make_object<td_api::canSendMessageToUserResultUserRestrictsNewChats>());
     }
     return promise.set_value(td_api::make_object<td_api::canSendMessageToUserResultOk>());
@@ -8007,9 +8051,9 @@ void UserManager::allow_send_message_to_user(UserId user_id) {
   CHECK(!td_->auth_manager_->is_bot());
   if (get_user_full(user_id) == nullptr) {
     CHECK(user_id.is_valid());
-    auto it = user_full_contact_price_.find(user_id);
-    if (it != user_full_contact_price_.end() && it->second == -1) {
-      it->second = 0;
+    auto *contact_price = user_full_contact_price_.get(user_id);
+    if (contact_price != nullptr && *contact_price == -1) {
+      *contact_price = 0;
     }
   }
 }
@@ -9159,6 +9203,10 @@ void UserManager::on_get_user_full(telegram_api::object_ptr<telegram_api::userFu
                                  user->noforwards_peer_enabled_);
   on_update_user_full_note(user_full,
                            get_formatted_text(this, std::move(user->note_), true, false, "on_get_user_full note"));
+  on_update_user_full_ton_wallet_card(user_full,
+                                      TonWalletCard::get_ton_wallet_card(td_, std::move(user->wallet_card_)));
+  on_update_user_full_share_theme(user_full,
+                                  ProfileShareTheme::get_profile_share_theme(td_, std::move(user->share_theme_)));
 
   bool can_pin_messages = user->can_pin_message_;
   bool can_be_called = user->phone_calls_available_ && !user->phone_calls_private_;
@@ -9430,7 +9478,7 @@ void UserManager::on_get_user_full(telegram_api::object_ptr<telegram_api::userFu
   if (!first_saved_music_file_id.is_valid()) {
     drop_user_saved_music(user_id, true, "on_get_user_full");
   } else {
-    auto user_saved_music = user_saved_music_.get_pointer(user_id);
+    auto user_saved_music = user_saved_music_.get(user_id);
     if (user_saved_music != nullptr && user_saved_music->offset == 0 &&
         (user_saved_music->saved_music_file_ids.empty() ||
          user_saved_music->saved_music_file_ids[0] != first_saved_music_file_id)) {
@@ -9517,6 +9565,12 @@ void UserManager::on_load_user_full_from_database(UserId user_id, string value) 
   }
   if (user_full->bot_verification != nullptr) {
     user_full->bot_verification->add_dependencies(dependencies);
+  }
+  if (user_full->ton_wallet_card != nullptr) {
+    user_full->ton_wallet_card->add_dependencies(dependencies);
+  }
+  if (user_full->share_theme != nullptr) {
+    user_full->share_theme->add_dependencies(dependencies);
   }
   if (user_full->bot_info != nullptr) {
     dependencies.add(user_full->bot_info->manager_bot_user_id);
@@ -9652,7 +9706,7 @@ void UserManager::drop_user_full_photos(UserFull *user_full, UserId user_id, int
 }
 
 void UserManager::drop_user_photos(UserId user_id, bool is_empty, const char *source) {
-  auto user_photos = user_photos_.get_pointer(user_id);
+  auto user_photos = user_photos_.get(user_id);
   if (user_photos != nullptr) {
     int32 new_count = is_empty ? 0 : -1;
     if (user_photos->count == new_count) {
@@ -9668,7 +9722,7 @@ void UserManager::drop_user_photos(UserId user_id, bool is_empty, const char *so
 }
 
 void UserManager::drop_user_saved_music(UserId user_id, bool is_empty, const char *source) {
-  auto user_saved_music = user_saved_music_.get_pointer(user_id);
+  auto user_saved_music = user_saved_music_.get(user_id);
   if (user_saved_music != nullptr) {
     int32 new_count = is_empty ? 0 : -1;
     if (user_saved_music->count == new_count) {
@@ -9717,6 +9771,8 @@ void UserManager::drop_user_full(UserId user_id) {
   user_full->linked_community_id = CommunityId();
   user_full->business_info = nullptr;
   user_full->bot_verification = nullptr;
+  user_full->ton_wallet_card = nullptr;
+  user_full->share_theme = nullptr;
   user_full->star_rating = nullptr;
   user_full->pending_star_rating = nullptr;
   user_full->pending_star_rating_date = 0;
@@ -10593,8 +10649,10 @@ td_api::object_ptr<td_api::userFullInfo> UserManager::get_user_full_info_object(
       user_full->gift_settings.get_gift_settings_object(), std::move(bot_verification),
       get_profile_tab_object(user_full->main_profile_tab),
       td_->audios_manager_->get_audio_object(user_full->first_saved_music_file_id), std::move(user_rating),
-      std::move(pending_user_rating), user_full->pending_star_rating_date, std::move(note), std::move(business_info),
-      std::move(bot_info));
+      std::move(pending_user_rating), user_full->pending_star_rating_date, std::move(note),
+      user_full->ton_wallet_card == nullptr ? nullptr : user_full->ton_wallet_card->get_ton_wallet_card_object(td_),
+      user_full->share_theme == nullptr ? nullptr : user_full->share_theme->get_profile_share_theme_object(td_),
+      std::move(business_info), std::move(bot_info));
 }
 
 td_api::object_ptr<td_api::updateContactCloseBirthdays> UserManager::get_update_contact_close_birthdays() const {

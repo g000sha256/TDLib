@@ -11,18 +11,18 @@
 #include "td/telegram/DialogId.h"
 #include "td/telegram/Document.h"
 #include "td/telegram/DocumentsManager.h"
-#include "td/telegram/files/FileType.h"
 #include "td/telegram/Global.h"
-#include "td/telegram/JsonValue.h"
+#include "td/telegram/MediaAreaCoordinates.h"
 #include "td/telegram/MessagesManager.h"
 #include "td/telegram/misc.h"
 #include "td/telegram/OptionManager.h"
 #include "td/telegram/PasswordManager.h"
 #include "td/telegram/PhotoFormat.h"
 #include "td/telegram/ServerMessageId.h"
-#include "td/telegram/StickersManager.h"
 #include "td/telegram/Td.h"
 #include "td/telegram/telegram_api.h"
+#include "td/telegram/TonNft.h"
+#include "td/telegram/TonWalletCard.h"
 #include "td/telegram/TonWalletOwnershipProof.h"
 #include "td/telegram/UpdatesManager.h"
 #include "td/telegram/UserManager.h"
@@ -33,7 +33,6 @@
 #include "td/utils/base64.h"
 #include "td/utils/buffer.h"
 #include "td/utils/crypto.h"
-#include "td/utils/Ed25519.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
 #include "td/utils/Random.h"
@@ -426,7 +425,49 @@ class ReplaceWalletQuery final : public Td::ResultHandler {
 
     auto result = result_ptr.move_as_ok();
     td_->ton_wallet_manager_->on_update_wallet_state(std::move(result));
+    // the TON wallet card has changed
+    td_->user_manager_->invalidate_user_full(td_->user_manager_->get_my_id());
     promise_.set_value(Unit());
+  }
+
+  void on_error(Status status) final {
+    promise_.set_error(std::move(status));
+  }
+};
+
+class SetWalletCardStickersQuery final : public Td::ResultHandler {
+  Promise<td_api::object_ptr<td_api::tonWalletCard>> promise_;
+
+ public:
+  explicit SetWalletCardStickersQuery(Promise<td_api::object_ptr<td_api::tonWalletCard>> &&promise)
+      : promise_(std::move(promise)) {
+  }
+
+  void send(vector<telegram_api::object_ptr<telegram_api::inputWalletCardSticker>> &&stickers,
+            const string &background_nft_address) {
+    int32 flags = 0;
+    if (!background_nft_address.empty()) {
+      flags |= telegram_api::wallet_setCardStickers::BG_NFT_ADDRESS_MASK;
+    }
+    send_query(G()->net_query_creator().create(
+        telegram_api::wallet_setCardStickers(flags, std::move(stickers), background_nft_address)));
+  }
+
+  void on_result(BufferSlice packet) final {
+    auto result_ptr = fetch_result<telegram_api::wallet_setCardStickers>(packet);
+    if (result_ptr.is_error()) {
+      return on_error(result_ptr.move_as_error());
+    }
+
+    auto result = result_ptr.move_as_ok();
+    LOG(INFO) << "Receive result for SetWalletCardStickersQuery: " << to_string(result);
+    auto card = TonWalletCard::get_ton_wallet_card(td_, std::move(result));
+    if (card == nullptr) {
+      return on_error(Status::Error(500, "Receive invalid TON wallet card"));
+    }
+    auto card_object = card->get_ton_wallet_card_object(td_);
+    td_->user_manager_->on_update_my_ton_wallet_card(std::move(card));
+    promise_.set_value(std::move(card_object));
   }
 
   void on_error(Status status) final {
@@ -629,7 +670,7 @@ class TonWalletManager::GetTonNftsQuery final : public Td::ResultHandler {
     auto result = result_ptr.move_as_ok();
     LOG(INFO) << "Receive result for GetTonNftsQuery: " << to_string(result);
     auto nfts = transform(std::move(result->items_),
-                          [td = td_](auto &&item) { return Nft(td, std::move(item)).get_ton_nft_object(td); });
+                          [td = td_](auto &&item) { return TonNft(td, std::move(item)).get_ton_nft_object(td); });
     promise_.set_value(td_api::make_object<td_api::tonNfts>(std::move(nfts), result->next_offset_));
   }
 
@@ -1348,58 +1389,6 @@ td_api::object_ptr<td_api::onRampPaymentSession> TonWalletManager::OnRampSession
   return td_api::make_object<td_api::onRampPaymentSession>(session_id_, expires_date_, url_);
 }
 
-TonWalletManager::NftAttribute::NftAttribute(telegram_api::object_ptr<telegram_api::wallet_nftAttribute> &&attribute)
-    : trait_type_(std::move(attribute->trait_type_)), value_(std::move(attribute->value_)) {
-}
-
-td_api::object_ptr<td_api::tonNftAttribute> TonWalletManager::NftAttribute::get_ton_nft_attribute_object() const {
-  return td_api::make_object<td_api::tonNftAttribute>(trait_type_, value_);
-}
-
-TonWalletManager::Nft::Nft(Td *td, telegram_api::object_ptr<telegram_api::wallet_nftItem> &&item)
-    : collection_address_(std::move(item->collection_address_))
-    , address_(std::move(item->address_))
-    , owner_address_(std::move(item->owner_address_))
-    , index_(std::move(item->index_))
-    , name_(std::move(item->name_))
-    , description_(std::move(item->description_))
-    , image_(get_web_document_photo_size(td->file_manager_.get(), FileType::Photo, DialogId(), std::move(item->image_)))
-    , image_small_(get_web_document_photo_size(td->file_manager_.get(), FileType::Photo, DialogId(),
-                                               std::move(item->image_small_)))
-    , attributes_(transform(std::move(item->attributes_),
-                            [](auto &&attribute) { return NftAttribute(std::move(attribute)); })) {
-  if (item->content_url_ != nullptr) {
-    auto parsed_document = td->documents_manager_->on_get_document({std::move(item->content_url_)}, DialogId(), false,
-                                                                   false, nullptr, Document::Type::General);
-    if (parsed_document.file_id.is_valid() && parsed_document.type == Document::Type::General) {
-      content_url_file_id_ = parsed_document.file_id;
-    }
-  }
-  if (item->lottie_ != nullptr) {
-    auto parsed_document = td->documents_manager_->on_get_document({std::move(item->lottie_)}, DialogId(), false, false,
-                                                                   nullptr, Document::Type::Sticker);
-    if (parsed_document.file_id.is_valid() && parsed_document.type == Document::Type::Sticker) {
-      lottie_file_id_ = parsed_document.file_id;
-    }
-  }
-  if (item->extra_ != nullptr) {
-    extra_ = std::move(item->extra_->data_);
-  }
-}
-
-td_api::object_ptr<td_api::tonNft> TonWalletManager::Nft::get_ton_nft_object(Td *td) const {
-  string extra = extra_;
-  auto r_json_value = get_json_value(extra);
-  return td_api::make_object<td_api::tonNft>(
-      collection_address_, address_, owner_address_, index_, name_, description_,
-      image_.file_id.is_valid() ? get_photo_size_object(td->file_manager_.get(), &image_) : nullptr,
-      image_small_.file_id.is_valid() ? get_photo_size_object(td->file_manager_.get(), &image_small_) : nullptr,
-      td->documents_manager_->get_document_object(content_url_file_id_, PhotoFormat::Jpeg),
-      td->stickers_manager_->get_sticker_object(lottie_file_id_),
-      transform(attributes_, [](const auto &attribute) { return attribute.get_ton_nft_attribute_object(); }),
-      r_json_value.is_ok() ? r_json_value.move_as_ok() : nullptr);
-}
-
 TonWalletManager::TonConnectManifest::TonConnectManifest(
     Td *td, telegram_api::object_ptr<telegram_api::tonConnectManifest> &&manifest)
     : url_(std::move(manifest->url_)), name_(std::move(manifest->name_)) {
@@ -2090,6 +2079,40 @@ void TonWalletManager::get_nfts(const string &offset, int32 limit,
   td_->create_handler<GetTonNftsQuery>(std::move(promise))->send(offset, limit);
 }
 
+void TonWalletManager::get_ton_wallet_card_background_gift_collection_names(
+    Promise<td_api::object_ptr<td_api::upgradedGiftCollectionNames>> &&promise) {
+  promise.set_value(td_api::make_object<td_api::upgradedGiftCollectionNames>(
+      full_split(G()->get_option_string("ton_wallet_card_background_gifts"), '\xFF')));
+}
+
+void TonWalletManager::set_ton_wallet_card_stickers(
+    vector<td_api::object_ptr<td_api::inputTonWalletCardSticker>> &&stickers, const string &background_nft_address,
+    Promise<td_api::object_ptr<td_api::tonWalletCard>> &&promise) {
+  vector<string> nft_addresses;
+  vector<telegram_api::object_ptr<telegram_api::inputWalletCardSticker>> input_stickers;
+  for (auto &sticker : stickers) {
+    if (sticker == nullptr) {
+      return promise.set_error(400, "Sticker must be non-empty");
+    }
+    MediaAreaCoordinates coordinates(sticker->position_);
+    if (!coordinates.is_valid()) {
+      return promise.set_error(400, "Invalid sticker position specified");
+    }
+    TRY_STATUS_PROMISE(promise, check_ton_address(sticker->nft_address_));
+    if (td::contains(nft_addresses, sticker->nft_address_)) {
+      return promise.set_error(400, "The same NFT can't be used twice");
+    }
+    nft_addresses.push_back(sticker->nft_address_);
+    input_stickers.push_back(telegram_api::make_object<telegram_api::inputWalletCardSticker>(
+        coordinates.get_input_media_area_coordinates(), sticker->nft_address_));
+  }
+  if (!background_nft_address.empty() && !td::contains(nft_addresses, background_nft_address)) {
+    return promise.set_error(400, "Background NFT must be one of the stickers");
+  }
+  td_->create_handler<SetWalletCardStickersQuery>(std::move(promise))
+      ->send(std::move(input_stickers), background_nft_address);
+}
+
 void TonWalletManager::get_ton_connect_sessions(Promise<td_api::object_ptr<td_api::tonConnectSessions>> &&promise) {
   td_->create_handler<GetTonConnectSessionsQuery>(std::move(promise))->send();
 }
@@ -2337,6 +2360,8 @@ td_api::object_ptr<td_api::tonWalletTransaction> TonWalletManager::get_ton_walle
   UserId peer_user_id;
   string peer_domain;
   string peer_provider_name;
+  bool is_telegram_gift = false;
+  bool is_saved = false;
   switch (transaction->peer_->get_id()) {
     case telegram_api::walletTransactionPeerUser::ID: {
       auto peer = telegram_api::move_object_as<telegram_api::walletTransactionPeerUser>(transaction->peer_);
@@ -2362,6 +2387,14 @@ td_api::object_ptr<td_api::tonWalletTransaction> TonWalletManager::get_ton_walle
       peer_provider_name = std::move(peer->provider_name_);
       break;
     }
+    case telegram_api::walletTransactionPeerChannel::ID:
+      break;
+    case telegram_api::walletTransactionPeerTelegramGift::ID: {
+      auto peer = telegram_api::move_object_as<telegram_api::walletTransactionPeerTelegramGift>(transaction->peer_);
+      is_telegram_gift = true;
+      is_saved = peer->own_profile_;
+      break;
+    }
     case telegram_api::walletTransactionPeerUnsupported::ID:
       break;
     default:
@@ -2379,9 +2412,16 @@ td_api::object_ptr<td_api::tonWalletTransaction> TonWalletManager::get_ton_walle
   }();
   auto type = [&]() -> td_api::object_ptr<td_api::TonWalletTransactionType> {
     if (transaction->nft_ != nullptr) {
+      auto nft = TonNft(td, std::move(transaction->nft_)).get_ton_nft_object(td);
+      if (is_telegram_gift) {
+        return td_api::make_object<td_api::tonWalletTransactionTypeTelegramGiftTransfer>(
+            std::move(nft), !transaction->incoming_, is_saved);
+      }
       return td_api::make_object<td_api::tonWalletTransactionTypeNftTransfer>(
-          Nft(td, std::move(transaction->nft_)).get_ton_nft_object(td), !transaction->incoming_, transaction->comment_,
-          transaction->comment_encrypted_);
+          std::move(nft), !transaction->incoming_, transaction->comment_, transaction->comment_encrypted_);
+    }
+    if (is_telegram_gift) {
+      LOG(ERROR) << "Receive Telegram gift transaction " << transaction->id_ << " without NFT";
     }
     if (!peer_provider_name.empty()) {
       return td_api::make_object<td_api::tonWalletTransactionTypeOnRampDeposit>(amount, peer_provider_name);

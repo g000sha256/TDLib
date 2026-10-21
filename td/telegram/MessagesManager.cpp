@@ -2105,13 +2105,13 @@ class SendScreenshotNotificationQuery final : public Td::ResultHandler {
     auto input_peer = td_->dialog_manager_->get_input_peer(dialog_id, AccessRights::Write);
     CHECK(input_peer != nullptr);
 
-    send_query(
-        G()->net_query_creator().create(telegram_api::messages_sendScreenshotNotification(
-                                            std::move(input_peer),
-                                            telegram_api::make_object<telegram_api::inputReplyToMessage>(
-                                                0, 0, 0, nullptr, string(), Auto(), 0, nullptr, 0, BufferSlice()),
-                                            random_id),
-                                        {{dialog_id, MessageContentType::Text}}));
+    send_query(G()->net_query_creator().create(telegram_api::messages_sendScreenshotNotification(
+                                                   std::move(input_peer),
+                                                   telegram_api::make_object<telegram_api::inputReplyToMessage>(
+                                                       0, 0, 0, nullptr, string(), Auto(), 0, nullptr, 0, BufferSlice(),
+                                                       vector<telegram_api::object_ptr<telegram_api::RichText>>()),
+                                                   random_id),
+                                               {{dialog_id, MessageContentType::Text}}));
   }
 
   void on_result(BufferSlice packet) final {
@@ -9116,6 +9116,63 @@ void MessagesManager::read_all_dialog_reactions(DialogId dialog_id, ForumTopicId
   // remove_message_dialog_notifications(d, MessageId::max(), true, "read_all_dialog_reactions");
 
   td_->message_query_manager_->read_all_dialog_reactions_on_server(dialog_id, 0, std::move(promise));
+}
+
+void MessagesManager::delete_local_reactions_by_sender(DialogId dialog_id, DialogId sender_dialog_id) {
+  if (td_->auth_manager_->is_bot()) {
+    return;
+  }
+  auto *d = get_dialog(dialog_id);
+  if (d == nullptr) {
+    return;
+  }
+  auto message_ids =
+      find_dialog_messages(d, [&](const Message *m) { return can_delete_message_reactions(dialog_id, m); });
+
+  LOG(INFO) << "Found " << message_ids.size() << " messages with reactions in memory";
+  for (auto message_id : message_ids) {
+    auto m = get_message(d, message_id);
+    CHECK(m != nullptr);
+    delete_message_reactions_by_sender(d, m, sender_dialog_id, "delete_local_reactions_by_sender");
+  }
+}
+
+void MessagesManager::delete_reaction_by_sender(DialogId dialog_id, MessageId message_id, DialogId sender_dialog_id) {
+  if (td_->auth_manager_->is_bot()) {
+    return;
+  }
+  auto *d = get_dialog(dialog_id);
+  if (d == nullptr) {
+    return;
+  }
+  auto m = get_message_force(d, message_id, "delete_reaction_by_sender");
+  if (m == nullptr || !can_delete_message_reactions(dialog_id, m)) {
+    return;
+  }
+  delete_message_reactions_by_sender(d, m, sender_dialog_id, "delete_reaction_by_sender");
+}
+
+void MessagesManager::delete_message_reactions_by_sender(Dialog *d, Message *m, DialogId sender_dialog_id,
+                                                         const char *source) {
+  auto dialog_id = d->dialog_id;
+  bool had_unread_reactions = has_unread_message_reactions(dialog_id, m);
+  auto old_unread_reaction_count = m->reactions->unread_reactions_.size();
+  if (!m->reactions->remove_reactions_by_sender(sender_dialog_id, get_my_reaction_dialog_id(d))) {
+    return;
+  }
+  m->reactions->sort_reactions(active_reaction_pos_);
+
+  if (had_unread_reactions && m->reactions->unread_reactions_.size() != old_unread_reaction_count) {
+    if (has_unread_message_reactions(dialog_id, m)) {
+      send_update_message_unread_reactions(dialog_id, m, d->unread_reaction_count);
+    } else {
+      on_unread_message_reaction_removed(d, m, source);
+    }
+  }
+  if (is_visible_message_reactions(dialog_id, m)) {
+    send_update_message_interaction_info(dialog_id, m);
+  }
+  on_message_changed(d, m, true, source);
 }
 
 void MessagesManager::read_all_local_dialog_poll_votes(DialogId dialog_id, ForumTopicId forum_topic_id) {
@@ -21015,16 +21072,16 @@ Status MessagesManager::can_send_message(DialogId dialog_id) const {
   return td_->dialog_manager_->can_send_message_to_dialog(dialog_id);
 }
 
-MessageId MessagesManager::get_persistent_message_id(const Dialog *d, MessageId message_id) const {
+MessageId MessagesManager::get_persistent_message_id(const Dialog *d, MessageId message_id) {
   if (!message_id.is_valid() && !message_id.is_valid_scheduled()) {
     return MessageId();
   }
   if (message_id.is_yet_unsent()) {
     // it is possible that user tries to do something with an already sent message by its temporary identifier
     // we need to use real message in this case and transparently replace message_id
-    auto it = yet_unsent_message_full_id_to_persistent_message_id_.find({d->dialog_id, message_id});
-    if (it != yet_unsent_message_full_id_to_persistent_message_id_.end()) {
-      return it->second;
+    auto *persistent_message_id = yet_unsent_message_full_id_to_persistent_message_id_.get({d->dialog_id, message_id});
+    if (persistent_message_id != nullptr) {
+      return *persistent_message_id;
     }
   }
 
@@ -21824,12 +21881,12 @@ Result<td_api::object_ptr<td_api::messages>> MessagesManager::send_message_group
     unique_ptr<Message> message;
     Message *m;
     if (message_send_options.only_preview) {
-      message = create_message_to_send(d, message_topic, input_reply_to.clone(), message_send_options,
+      message = create_message_to_send(d, message_topic, input_reply_to.clone(td_, dialog_id), message_send_options,
                                        std::move(message_content.content), message_content.invert_media, i != 0,
                                        nullptr, DialogId(), false, DialogId(), false);
       m = message.get();
     } else {
-      m = get_message_to_send(d, message_topic, input_reply_to.clone(), message_send_options,
+      m = get_message_to_send(d, message_topic, input_reply_to.clone(td_, dialog_id), message_send_options,
                               dup_message_content(td_, dialog_id, message_content.content.get(),
                                                   MessageContentDupType::Send, false, MessageCopyOptions()),
                               message_content.invert_media, &need_update_dialog_pos, i != 0);
@@ -24319,10 +24376,10 @@ void MessagesManager::do_forward_messages(DialogId to_dialog_id, DialogId from_d
   vector<int64> random_ids =
       transform(messages, [this, to_dialog_id](const Message *m) { return begin_send_message(to_dialog_id, m); });
   send_closure_later(actor_id(this), &MessagesManager::send_forward_message_query, flags, to_dialog_id,
-                     get_send_message_topic(to_dialog_id, messages[0]), messages[0]->input_reply_to.clone(),
-                     from_dialog_id, std::move(as_input_peer), ids, is_ephemeral, single_message_id,
-                     std::move(random_ids), schedule_date, schedule_repeat_period, messages[0]->effect_id,
-                     messages[0]->new_video_start_timestamp,
+                     get_send_message_topic(to_dialog_id, messages[0]),
+                     messages[0]->input_reply_to.clone(td_, to_dialog_id), from_dialog_id, std::move(as_input_peer),
+                     ids, is_ephemeral, single_message_id, std::move(random_ids), schedule_date, schedule_repeat_period,
+                     messages[0]->effect_id, messages[0]->new_video_start_timestamp,
                      messages[0]->paid_message_star_count * static_cast<int32>(messages.size()),
                      SuggestedPost::clone(messages[0]->suggested_post), get_erase_log_event_promise(log_event_id));
 }
@@ -24767,7 +24824,7 @@ Result<vector<td_api::object_ptr<td_api::message>>> MessagesManager::forward_mes
         auto it = forwarded_message_id_to_new_message_id.find(original_reply_to_message_id);
         if (it != forwarded_message_id_to_new_message_id.end()) {
           // keep replies in forwarded messages
-          input_reply_to = forwarded_message->replied_message_info.get_message_input_reply_to();
+          input_reply_to = forwarded_message->replied_message_info.get_message_input_reply_to(td_);
           input_reply_to.set_message_id(it->second, "forward_messages_impl");
         }
       }
@@ -26891,7 +26948,7 @@ void MessagesManager::send_update_message_send_succeeded(Dialog *d, MessageId ol
     td_->star_manager_->add_pending_owned_ton_count(stake_ton_count - prize_ton_count, true);
   }
   if (!td_->auth_manager_->is_bot()) {
-    yet_unsent_message_full_id_to_persistent_message_id_.emplace({d->dialog_id, old_message_id}, m->message_id);
+    yet_unsent_message_full_id_to_persistent_message_id_.set({d->dialog_id, old_message_id}, m->message_id);
 
     auto message =
         delete_message(d, m->message_id, false, need_update_dialog_pos, "send_update_message_send_succeeded");
@@ -28289,7 +28346,7 @@ void MessagesManager::fail_send_message(MessageFullId message_full_id, int32 err
 
   LOG(INFO) << "Send updateMessageSendFailed for " << message_full_id;
   if (!td_->auth_manager_->is_bot()) {
-    yet_unsent_message_full_id_to_persistent_message_id_.emplace({dialog_id, old_message_id}, m->message_id);
+    yet_unsent_message_full_id_to_persistent_message_id_.set({dialog_id, old_message_id}, m->message_id);
   }
   send_closure(G()->td(), &Td::send_update,
                td_api::make_object<td_api::updateMessageSendFailed>(

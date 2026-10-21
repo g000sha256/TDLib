@@ -32,6 +32,7 @@
 #include "td/telegram/StateManager.h"
 #include "td/telegram/Td.h"
 #include "td/telegram/telegram_api.h"
+#include "td/telegram/TempPasswordState.h"
 #include "td/telegram/UpdatesManager.h"
 #include "td/telegram/UserManager.h"
 #include "td/telegram/UserStarGift.h"
@@ -514,18 +515,44 @@ class ConvertStarGiftQuery final : public Td::ResultHandler {
       return on_error(result_ptr.move_as_error());
     }
 
-    if (dialog_id_ == td_->dialog_manager_->get_my_dialog_id()) {
-      td_->user_manager_->reload_user_full(td_->user_manager_->get_my_id(), std::move(promise_),
-                                           "ConvertStarGiftQuery");
-    } else if (dialog_id_.get_type() == DialogType::Channel) {
-      td_->chat_manager_->reload_channel_full(dialog_id_.get_channel_id(), std::move(promise_), "ConvertStarGiftQuery");
-    } else {
-      promise_.set_value(Unit());
-    }
+    promise_.set_value(Unit());
   }
 
   void on_error(Status status) final {
     td_->dialog_manager_->on_get_dialog_error(dialog_id_, status, "ConvertStarGiftQuery");
+    promise_.set_error(std::move(status));
+  }
+};
+
+class DeleteStarGiftQuery final : public Td::ResultHandler {
+  Promise<Unit> promise_;
+  DialogId dialog_id_;
+
+ public:
+  explicit DeleteStarGiftQuery(Promise<Unit> &&promise) : promise_(std::move(promise)) {
+  }
+
+  void send(BusinessConnectionId business_connection_id, StarGiftId star_gift_id, DialogId dialog_id) {
+    dialog_id_ = dialog_id;
+    auto input_gift = star_gift_id.get_input_saved_star_gift(td_);
+    CHECK(input_gift != nullptr);
+    send_query(G()->net_query_creator().create_with_prefix(
+        business_connection_id.get_invoke_prefix(), telegram_api::payments_deleteStarGift(std::move(input_gift)),
+        td_->business_connection_manager_->get_business_connection_dc_id(business_connection_id)));
+  }
+
+  void on_result(BufferSlice packet) final {
+    auto result_ptr = fetch_result<telegram_api::payments_deleteStarGift>(packet);
+    if (result_ptr.is_error()) {
+      return on_error(result_ptr.move_as_error());
+    }
+
+    LOG(INFO) << "Receive result for DeleteStarGiftQuery: " << result_ptr.ok();
+    promise_.set_value(Unit());
+  }
+
+  void on_error(Status status) final {
+    td_->dialog_manager_->on_get_dialog_error(dialog_id_, status, "DeleteStarGiftQuery");
     promise_.set_error(std::move(status));
   }
 };
@@ -1929,15 +1956,14 @@ class GetStarGiftWithdrawalUrlQuery final : public Td::ResultHandler {
   explicit GetStarGiftWithdrawalUrlQuery(Promise<string> &&promise) : promise_(std::move(promise)) {
   }
 
-  void send(StarGiftId star_gift_id,
-            telegram_api::object_ptr<telegram_api::InputCheckPasswordSRP> input_check_password) {
+  void send(StarGiftId star_gift_id, const string &temp_password) {
     auto input_gift = star_gift_id.get_input_saved_star_gift(td_);
     if (input_gift == nullptr) {
       return on_error(Status::Error(400, "Gift not found"));
     }
 
     send_query(G()->net_query_creator().create(
-        telegram_api::payments_getStarGiftWithdrawalUrl(std::move(input_gift), std::move(input_check_password))));
+        telegram_api::payments_getStarGiftWithdrawalUrl(0, std::move(input_gift), BufferSlice(temp_password))));
   }
 
   void on_result(BufferSlice packet) final {
@@ -1947,6 +1973,96 @@ class GetStarGiftWithdrawalUrlQuery final : public Td::ResultHandler {
     }
 
     promise_.set_value(std::move(result_ptr.ok_ref()->url_));
+  }
+
+  void on_error(Status status) final {
+    promise_.set_error(std::move(status));
+  }
+};
+
+class DepositStarGiftQuery final : public Td::ResultHandler {
+  Promise<td_api::object_ptr<td_api::upgradedGiftDepositInfo>> promise_;
+
+ public:
+  explicit DepositStarGiftQuery(Promise<td_api::object_ptr<td_api::upgradedGiftDepositInfo>> &&promise)
+      : promise_(std::move(promise)) {
+  }
+
+  void send(telegram_api::object_ptr<telegram_api::InputPeer> &&input_peer, const string &name, bool hide_sender) {
+    send_query(G()->net_query_creator().create(
+        telegram_api::payments_depositStarGift(0, hide_sender, std::move(input_peer), name)));
+  }
+
+  void on_result(BufferSlice packet) final {
+    auto result_ptr = fetch_result<telegram_api::payments_depositStarGift>(packet);
+    if (result_ptr.is_error()) {
+      return on_error(result_ptr.move_as_error());
+    }
+
+    auto ptr = result_ptr.move_as_ok();
+    LOG(INFO) << "Receive result for DepositStarGiftQuery: " << to_string(ptr);
+    promise_.set_value(td_api::make_object<td_api::upgradedGiftDepositInfo>(
+        std::move(ptr->nft_address_), ptr->payload_.as_slice().str(), ptr->amount_));
+  }
+
+  void on_error(Status status) final {
+    promise_.set_error(std::move(status));
+  }
+};
+
+class DisplayStarGiftQuery final : public Td::ResultHandler {
+  Promise<Unit> promise_;
+
+ public:
+  explicit DisplayStarGiftQuery(Promise<Unit> &&promise) : promise_(std::move(promise)) {
+  }
+
+  void send(telegram_api::object_ptr<telegram_api::InputPeer> &&input_peer, const string &name) {
+    send_query(G()->net_query_creator().create(telegram_api::payments_displayStarGift(0, std::move(input_peer), name)));
+  }
+
+  void on_result(BufferSlice packet) final {
+    auto result_ptr = fetch_result<telegram_api::payments_displayStarGift>(packet);
+    if (result_ptr.is_error()) {
+      return on_error(result_ptr.move_as_error());
+    }
+
+    promise_.set_value(Unit());
+  }
+
+  void on_error(Status status) final {
+    promise_.set_error(std::move(status));
+  }
+};
+
+class WithdrawStarGiftQuery final : public Td::ResultHandler {
+  Promise<Unit> promise_;
+
+ public:
+  explicit WithdrawStarGiftQuery(Promise<Unit> &&promise) : promise_(std::move(promise)) {
+  }
+
+  void send(StarGiftId star_gift_id, bool keep_on_profile, const string &temp_password) {
+    auto input_gift = star_gift_id.get_input_saved_star_gift(td_);
+    if (input_gift == nullptr) {
+      return on_error(Status::Error(400, "Gift not found"));
+    }
+
+    send_query(G()->net_query_creator().create(telegram_api::payments_withdrawStarGift(
+        0, keep_on_profile, std::move(input_gift), BufferSlice(temp_password))));
+  }
+
+  void on_result(BufferSlice packet) final {
+    auto result_ptr = fetch_result<telegram_api::payments_withdrawStarGift>(packet);
+    if (result_ptr.is_error()) {
+      return on_error(result_ptr.move_as_error());
+    }
+
+    bool result = result_ptr.move_as_ok();
+    if (!result) {
+      return on_error(Status::Error(500, "Internal Server Error: failed to withdraw the gift"));
+    }
+    promise_.set_value(Unit());
   }
 
   void on_error(Status status) final {
@@ -2867,6 +2983,30 @@ void StarGiftManager::convert_gift(BusinessConnectionId business_connection_id, 
       ->send(business_connection_id, star_gift_id, dialog_id);
 }
 
+void StarGiftManager::delete_gift(BusinessConnectionId business_connection_id, StarGiftId star_gift_id,
+                                  Promise<Unit> &&promise) {
+  if (business_connection_id.is_valid()) {
+    TRY_STATUS_PROMISE(promise, td_->business_connection_manager_->check_business_connection(business_connection_id));
+  }
+  if (star_gift_id.get_input_saved_star_gift(td_) == nullptr) {
+    return promise.set_error(400, "Invalid gift identifier specified");
+  }
+  auto dialog_id =
+      business_connection_id.is_valid()
+          ? DialogId(td_->business_connection_manager_->get_business_connection_user_id(business_connection_id))
+          : star_gift_id.get_dialog_id(td_);
+
+  auto query_promise = PromiseCreator::lambda(
+      [actor_id = actor_id(this), dialog_id, promise = std::move(promise)](Result<Unit> &&result) mutable {
+        if (result.is_error()) {
+          return promise.set_error(result.move_as_error());
+        }
+        send_closure(actor_id, &StarGiftManager::on_dialog_gift_transferred, dialog_id, DialogId(), std::move(promise));
+      });
+  td_->create_handler<DeleteStarGiftQuery>(std::move(query_promise))
+      ->send(business_connection_id, star_gift_id, dialog_id);
+}
+
 void StarGiftManager::save_gift(StarGiftId star_gift_id, bool is_saved, Promise<Unit> &&promise) {
   if (star_gift_id.get_input_saved_star_gift(td_) == nullptr) {
     return promise.set_error(400, "Invalid gift identifier specified");
@@ -3165,33 +3305,55 @@ void StarGiftManager::get_upgraded_gift_value_info(
   td_->create_handler<GetUniqueStarGiftValueInfoQuery>(std::move(promise))->send(name);
 }
 
-void StarGiftManager::get_star_gift_withdrawal_url(StarGiftId star_gift_id, const string &password,
-                                                   Promise<string> &&promise) {
+void StarGiftManager::get_star_gift_withdrawal_url(StarGiftId star_gift_id, Promise<string> &&promise) {
   if (!star_gift_id.is_valid()) {
     return promise.set_error(400, "Invalid gift identifier specified");
   }
-  if (password.empty()) {
-    return promise.set_error(400, "PASSWORD_HASH_INVALID");
+  auto temp_password_state = PasswordManager::get_temp_password_state_sync();
+  if (!temp_password_state.has_temp_password) {
+    return promise.set_error(400, "Temporary password required to withdraw the gift");
   }
-  send_closure(
-      td_->password_manager_, &PasswordManager::get_input_check_password_srp, password,
-      PromiseCreator::lambda([actor_id = actor_id(this), star_gift_id, promise = std::move(promise)](
-                                 Result<telegram_api::object_ptr<telegram_api::InputCheckPasswordSRP>> result) mutable {
-        if (result.is_error()) {
-          return promise.set_error(result.move_as_error());
-        }
-        send_closure(actor_id, &StarGiftManager::send_get_star_gift_withdrawal_url_query, star_gift_id,
-                     result.move_as_ok(), std::move(promise));
-      }));
+  td_->create_handler<GetStarGiftWithdrawalUrlQuery>(std::move(promise))
+      ->send(star_gift_id, temp_password_state.temp_password);
 }
 
-void StarGiftManager::send_get_star_gift_withdrawal_url_query(
-    StarGiftId star_gift_id, telegram_api::object_ptr<telegram_api::InputCheckPasswordSRP> input_check_password,
-    Promise<string> &&promise) {
-  TRY_STATUS_PROMISE(promise, G()->close_status());
+void StarGiftManager::get_upgraded_gift_deposit_info(
+    DialogId owner_dialog_id, const string &name, bool hide_sender,
+    Promise<td_api::object_ptr<td_api::upgradedGiftDepositInfo>> &&promise) {
+  auto input_peer = td_->dialog_manager_->get_input_peer(owner_dialog_id, AccessRights::Read);
+  if (input_peer == nullptr) {
+    return promise.set_error(400, "Have no access to the new gift owner");
+  }
+  if (name.empty()) {
+    return promise.set_error(400, "Invalid gift name specified");
+  }
+  td_->create_handler<DepositStarGiftQuery>(std::move(promise))->send(std::move(input_peer), name, hide_sender);
+}
 
-  td_->create_handler<GetStarGiftWithdrawalUrlQuery>(std::move(promise))
-      ->send(star_gift_id, std::move(input_check_password));
+void StarGiftManager::display_upgraded_gift(DialogId owner_dialog_id, const string &name, Promise<Unit> &&promise) {
+  telegram_api::object_ptr<telegram_api::InputPeer> input_peer;
+  if (owner_dialog_id.is_valid()) {
+    TRY_STATUS_PROMISE(promise, td_->dialog_manager_->check_dialog_access(owner_dialog_id, false, AccessRights::Write,
+                                                                          "display_upgraded_gift"));
+    input_peer = td_->dialog_manager_->get_input_peer(owner_dialog_id, AccessRights::Write);
+    CHECK(input_peer != nullptr);
+  }
+  if (name.empty()) {
+    return promise.set_error(400, "Invalid gift name specified");
+  }
+  td_->create_handler<DisplayStarGiftQuery>(std::move(promise))->send(std::move(input_peer), name);
+}
+
+void StarGiftManager::withdraw_star_gift(StarGiftId star_gift_id, bool keep_on_profile, Promise<Unit> &&promise) {
+  if (!star_gift_id.is_valid()) {
+    return promise.set_error(400, "Invalid gift identifier specified");
+  }
+  auto temp_password_state = PasswordManager::get_temp_password_state_sync();
+  if (!temp_password_state.has_temp_password) {
+    return promise.set_error(400, "Temporary password required to withdraw the gift");
+  }
+  td_->create_handler<WithdrawStarGiftQuery>(std::move(promise))
+      ->send(star_gift_id, keep_on_profile, temp_password_state.temp_password);
 }
 
 void StarGiftManager::set_star_gift_price(StarGiftId star_gift_id, StarGiftResalePrice price, Promise<Unit> &&promise) {
