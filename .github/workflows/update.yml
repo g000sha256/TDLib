@@ -18,17 +18,10 @@ jobs:
           fetch-depth: 0
 
       - name: Configure Git identity
-        run: |
-          git config user.name "Georgii Ippolitov"
-          git config user.email "github@g000sha256.dev"
+        run: bash .github/scripts/configure-git.sh
 
       - name: Add upstream remote and fetch
-        run: |
-          git remote add upstream https://github.com/tdlib/td.git
-          git fetch upstream
+        run: bash .github/scripts/fetch-upstream.sh
 
       - name: Merge upstream/master into master
-        run: |
-          git checkout -B master origin/master
-          git merge upstream/master -m "Merge branch 'upstream/master' into 'origin/master'"
-          git push origin master
+        run: bash .github/scripts/merge-upstream.sh
