@@ -1,4 +1,4 @@
-name: Update
+name: Sync upstream
 
 on:
   schedule:
@@ -11,17 +11,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Check out repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
-      - name: Configure Git identity
+      - name: Set Git identity
         run: bash .github/scripts/configure-git.sh
 
-      - name: Add upstream remote and fetch
+      - name: Fetch upstream changes
         run: bash .github/scripts/fetch-upstream.sh
 
-      - name: Merge upstream/master into main
+      - name: Merge and push upstream changes
         run: bash .github/scripts/merge-upstream.sh

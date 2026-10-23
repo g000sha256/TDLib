@@ -1,4 +1,4 @@
-name: Release
+name: Publish releases
 
 on:
   push:
@@ -12,16 +12,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Check out repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
-      - name: Configure Git identity
+      - name: Set Git identity
         run: bash .github/scripts/configure-git.sh
 
-      - name: Create tags and releases for new versions
+      - name: Create version tags and publish releases
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
 
