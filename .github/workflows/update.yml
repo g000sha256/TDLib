@@ -23,5 +23,5 @@ jobs:
       - name: Add upstream remote and fetch
         run: bash .github/scripts/fetch-upstream.sh
 
-      - name: Merge upstream/master into master
+      - name: Merge upstream/master into main
         run: bash .github/scripts/merge-upstream.sh

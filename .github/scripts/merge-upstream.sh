@@ -4,7 +4,7 @@ set -e
 
 # Read all commands before checkout
 {
-    git checkout -B master origin/master
-    git merge upstream/master -m "Merge branch 'upstream/master' into 'origin/master'"
-    git push origin master
+    git checkout -B main origin/main
+    git merge upstream/master -m "Merge branch 'upstream/master' into 'origin/main'"
+    git push origin main
 }
