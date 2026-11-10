@@ -1510,9 +1510,20 @@ class EditCallbackQueryMessageQuery final : public Td::ResultHandler {
 
     auto ptr = result_ptr.move_as_ok();
     LOG(INFO) << "Receive result for EditCallbackQueryMessageQuery: " << to_string(ptr);
-    auto promise = PromiseCreator::lambda([actor_id = G()->message_query_manager(), upload_id = upload_id_](Unit) {
-      send_closure(actor_id, &MessageQueryManager::cancel_edit_ephemeral_message, upload_id, Status::OK());
-    });
+    DialogId dialog_id;
+    EphemeralMessageId ephemeral_message_id;
+    auto sent_messages = UpdatesManager::get_new_ephemeral_messages(ptr.get());
+    if (sent_messages.size() != 1u || sent_messages[0]->peer_id_ == nullptr) {
+      LOG(ERROR) << "Receive wrong result for EditCallbackQueryMessageQuery: " << oneline(to_string(ptr));
+    } else {
+      dialog_id = DialogId(sent_messages[0]->peer_id_);
+      ephemeral_message_id = EphemeralMessageId(sent_messages[0]->id_);
+    }
+    auto promise = PromiseCreator::lambda(
+        [actor_id = G()->message_query_manager(), upload_id = upload_id_, dialog_id, ephemeral_message_id](Unit) {
+          send_closure(actor_id, &MessageQueryManager::on_edit_callback_query_message, upload_id, dialog_id,
+                       ephemeral_message_id);
+        });
     td_->updates_manager_->on_get_updates(std::move(ptr), std::move(promise));
   }
 
@@ -2647,6 +2658,17 @@ MessageContentUploadId MessageQueryManager::create_upload_message_content_query(
 void MessageQueryManager::start_upload_message_content(MessageContentUploadId upload_id,
                                                        bool after_file_reference_error) {
   LOG(INFO) << "Start to upload message content as " << upload_id;
+  auto it = upload_message_content_queries_.find(upload_id);
+  if (it == upload_message_content_queries_.end()) {
+    return;  // the upload was canceled
+  }
+  auto &query = it->second;
+  if (after_file_reference_error) {
+    CHECK(query.is_started_);
+  } else {
+    CHECK(!query.is_started_);
+    query.is_started_ = true;
+  }
   do_upload_message_content(upload_id, -1, after_file_reference_error ? vector<int>{-1} : vector<int>(), Unit());
 }
 
@@ -2758,12 +2780,7 @@ void MessageQueryManager::do_upload_message_content(MessageContentUploadId uploa
     return;  // the upload was canceled
   }
   auto &query = it->second;
-  if (bad_parts.empty()) {
-    CHECK(!query.is_started_);
-    query.is_started_ = true;
-  } else {
-    CHECK(query.is_started_);
-  }
+  CHECK(query.is_started_);
   const auto *content = query.content_.get();
   CHECK(content != nullptr);
   auto content_type = content->get_type();
@@ -3086,19 +3103,11 @@ void MessageQueryManager::on_upload_message_media_success(
 
 void MessageQueryManager::on_upload_message_media_file_error(MessageContentUploadId upload_id, int32 media_pos,
                                                              vector<int> &&bad_parts) {
-  auto it = upload_message_content_queries_.find(upload_id);
-  if (it == upload_message_content_queries_.end()) {
-    return;  // the upload was canceled
-  }
   do_upload_message_content(upload_id, media_pos, std::move(bad_parts), Unit());
 }
 
 void MessageQueryManager::on_upload_message_media_fail(MessageContentUploadId upload_id, int32 media_pos,
                                                        Status error) {
-  auto it = upload_message_content_queries_.find(upload_id);
-  if (it == upload_message_content_queries_.end()) {
-    return;  // the upload was canceled
-  }
   send_closure_later(actor_id(this), &MessageQueryManager::on_upload_message_media_finished, upload_id, media_pos,
                      std::move(error));
 }
@@ -4170,7 +4179,8 @@ void MessageQueryManager::edit_ephemeral_message_caption(DialogId dialog_id, Use
 
 void MessageQueryManager::edit_callback_query_message(
     int64 callback_query_id, bool anchor, bool noforwards, td_api::object_ptr<td_api::ReplyMarkup> &&reply_markup,
-    td_api::object_ptr<td_api::InputMessageContent> &&input_message_content, Promise<Unit> &&promise) {
+    td_api::object_ptr<td_api::InputMessageContent> &&input_message_content,
+    Promise<td_api::object_ptr<td_api::message>> &&promise) {
   auto is_bot = td_->auth_manager_->is_bot();
   CHECK(is_bot);
 
@@ -4196,7 +4206,7 @@ void MessageQueryManager::edit_callback_query_message(
   query.reply_markup_ = std::move(new_reply_markup);
   query.content_ = std::move(content.content);
   query.invert_media_ = content.invert_media;
-  query.promise_ = std::move(promise);
+  query.message_promise_ = std::move(promise);
   start_upload_message_content(upload_id);
 }
 
@@ -4206,6 +4216,7 @@ void MessageQueryManager::cancel_edit_ephemeral_message(MessageContentUploadId u
     return;
   }
   auto promise = std::move(it->second.promise_);
+  auto message_promise = std::move(it->second.message_promise_);
   if (status.is_error()) {
     status = process_send_message_fail_error(std::move(status), it->second.dialog_id_, td_->auth_manager_->is_bot(),
                                              true, it->second.content_->get_type());
@@ -4214,10 +4225,34 @@ void MessageQueryManager::cancel_edit_ephemeral_message(MessageContentUploadId u
 
   cancel_upload_message_content(upload_id);
   if (status.is_error()) {
+    message_promise.set_error(status.clone());
     promise.set_error(std::move(status));
   } else {
+    CHECK(!message_promise);
     promise.set_value(Unit());
   }
+}
+
+void MessageQueryManager::on_edit_callback_query_message(MessageContentUploadId upload_id, DialogId dialog_id,
+                                                         EphemeralMessageId ephemeral_message_id) {
+  auto it = edit_ephemeral_message_queries_.find(upload_id);
+  if (it == edit_ephemeral_message_queries_.end()) {
+    return;
+  }
+  CHECK(it->second.is_send_);
+  auto promise = std::move(it->second.message_promise_);
+  edit_ephemeral_message_queries_.erase(it);
+
+  cancel_upload_message_content(upload_id);
+  if (!dialog_id.is_valid()) {
+    return promise.set_error(500, "Receive invalid response");
+  }
+  auto message_id = td_->messages_manager_->get_message_id_of_ephemeral_message_id(dialog_id, ephemeral_message_id);
+  if (!message_id.is_valid()) {
+    return promise.set_error(500, "Message not found");
+  }
+  promise.set_value(
+      td_->messages_manager_->get_message_object({dialog_id, message_id}, "on_edit_callback_query_message"));
 }
 
 telegram_api::object_ptr<telegram_api::InputPeer> MessageQueryManager::get_ephemeral_message_input_peer(
