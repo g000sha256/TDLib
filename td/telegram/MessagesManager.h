@@ -914,7 +914,8 @@ class MessagesManager final : public Actor {
                                                         const DialogNotificationSettings &old_settings,
                                                         const DialogNotificationSettings &new_settings);
 
-  void on_update_dialog_linked_community_id(DialogId dialog_id, CommunityId old_linked_community_id);
+  void on_update_dialog_linked_community_id(DialogId dialog_id, CommunityId old_linked_community_id,
+                                            CommunityId new_linked_community_id);
 
   void on_update_dialog_notify_settings(DialogId dialog_id,
                                         tl_object_ptr<telegram_api::peerNotifySettings> &&peer_notify_settings,
@@ -1770,6 +1771,9 @@ class MessagesManager final : public Actor {
   static std::pair<DialogId, unique_ptr<Message>> create_message(Td *td, MessageInfo &&message_info,
                                                                  bool is_guest_message, const char *source);
 
+  void get_topic_unread_message_count(DialogId dialog_id, const MessageTopic &message_topic, MessageSearchFilter filter,
+                                      Promise<int32> &&promise);
+
   void get_dialog_message_count_from_server(DialogId dialog_id, MessageTopic message_topic, MessageSearchFilter filter,
                                             Promise<int32> &&promise);
 
@@ -2407,9 +2411,13 @@ class MessagesManager final : public Actor {
 
   void register_message_reply(DialogId dialog_id, const Message *m);
 
+  void register_message_reply_media_timestamps(DialogId dialog_id, const Message *m);
+
   void reregister_message_reply(DialogId dialog_id, const Message *m);
 
   void unregister_message_reply(DialogId dialog_id, const Message *m);
+
+  void unregister_message_reply_media_timestamps(DialogId dialog_id, const Message *m);
 
   void send_update_new_message(const Dialog *d, const Message *m);
 

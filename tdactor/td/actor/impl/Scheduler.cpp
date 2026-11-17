@@ -22,12 +22,10 @@
 #include "td/utils/MpscPollableQueue.h"
 #include "td/utils/ObjectPool.h"
 #include "td/utils/port/thread_local.h"
-#include "td/utils/Promise.h"
 #include "td/utils/ScopeGuard.h"
 #include "td/utils/SliceBuilder.h"
 #include "td/utils/Time.h"
 
-#include <functional>
 #include <memory>
 #include <utility>
 
@@ -255,9 +253,8 @@ void Scheduler::clear() {
   poll_.clear();
 
   if (callback_ && !ExitGuard::is_exited()) {
-    // can't move lambda with unique_ptr inside into std::function
-    auto ptr = actor_info_pool_.release();
-    callback_->register_at_finish([ptr] { delete ptr; });
+    callback_->register_at_finish(
+        [actor_info_pool = std::move(actor_info_pool_)]() mutable { actor_info_pool.reset(); });
   } else {
     actor_info_pool_.reset();
   }
@@ -368,18 +365,18 @@ void Scheduler::send_to_other_scheduler(int32 sched_id, const ActorId<> &actor_i
   }
 }
 
-void Scheduler::run_on_scheduler(int32 sched_id, Promise<Unit> action) {
+void Scheduler::run_on_scheduler(int32 sched_id, SimpleAction action) {
   if (sched_id >= 0 && sched_id_ != sched_id) {
     class Worker final : public Actor {
      public:
-      explicit Worker(Promise<Unit> action) : action_(std::move(action)) {
+      explicit Worker(SimpleAction action) : action_(std::move(action)) {
       }
 
      private:
-      Promise<Unit> action_;
+      SimpleAction action_;
 
       void start_up() final {
-        action_.set_value(Unit());
+        action_();
         stop();
       }
     };
@@ -387,10 +384,10 @@ void Scheduler::run_on_scheduler(int32 sched_id, Promise<Unit> action) {
     return;
   }
 
-  action.set_value(Unit());
+  action();
 }
 
-void Scheduler::destroy_on_scheduler_impl(int32 sched_id, Promise<Unit> action) {
+void Scheduler::destroy_on_scheduler_impl(int32 sched_id, SimpleAction action) {
   auto empty_context = std::make_shared<ActorContext>();
   empty_context->this_ptr_ = empty_context;
   ActorContext *current_context = context_;
